@@ -1,0 +1,69 @@
+# Python
+__pycache__/
+.pytest_cache/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.venv
+venv/
+ENV/
+
+# Node.js
+node_modules/
+npm-debug.log
+yarn-error.log
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# macOS
+.DS_Store
+
+.env
+config.json
+
+
+# IDE
+.idea/
+.vscode/
+
+# Project specific
+backend/.venv/
+backend/service_account.json
+frontend/dist/
+frontend/node_modules/
+old/
+醫院內自動化平台_開發計畫與開發順序.md
+checklist.md
+
+# PyInstaller
+*.spec
+
+# Logs
+backend/logs/
+logs/
+
+##
+crawler_api_docs.md
+surkeycode_database.md
+backend/logs
+backend/scripts
+backend/tests
