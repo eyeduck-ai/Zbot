@@ -224,19 +224,25 @@ GET /api/test-supabase  # DB 連線測試
 
 ### 環境需求
 
-- Python 3.12+
+- Python 3.12 (透過 uv 自動管理)
 - [uv](https://github.com/astral-sh/uv) 套件管理器
 
 ### 初始化
 
 ```bash
-cd backend
+# 在專案根目錄執行 (使用 UV workspace)
+cd Zbot
 
-# 安裝依賴
+# 安裝 Python 3.12 (首次執行需要)
+uv python install 3.12
+
+# 安裝所有依賴
 uv sync
 
-# 開發依賴 (含 pytest)
-uv sync --all-extras
+# 此命令會安裝:
+# - backend 所有依賴 (含最新 Supabase SDK)
+# - zbot_launcher 依賴
+# - 開發工具 (pyinstaller, pytest 等)
 ```
 
 ### 設定檔 (config.json)
@@ -267,7 +273,8 @@ uv sync --all-extras
 ### 啟動開發伺服器
 
 ```bash
-uv run uvicorn app.main:app --reload --port 5487
+# 從根目錄執行
+uv run uvicorn app.main:app --reload --port 5487 --app-dir backend
 ```
 
 ---

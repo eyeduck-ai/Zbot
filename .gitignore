@@ -54,8 +54,7 @@ old/
 醫院內自動化平台_開發計畫與開發順序.md
 checklist.md
 
-# PyInstaller
-*.spec
+# PyInstaller build artifacts (spec files are tracked)
 
 # Logs
 backend/logs/

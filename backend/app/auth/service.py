@@ -265,7 +265,7 @@ async def get_user_permissions(username: str) -> dict:
     """
     # Admin bypass
     if username == "admin":
-        return {"role": "admin", "display_name": "管理者", "doc_code": "", "allowed_prefixes": ["*"]}
+        return {"user_id": None, "role": "admin", "display_name": "管理者", "doc_code": "", "allowed_prefixes": ["*"]}
 
     client = get_supabase_client()
     try:
@@ -274,7 +274,7 @@ async def get_user_permissions(username: str) -> dict:
         
         if not user_res.data or len(user_res.data) == 0:
             # User not found
-            return {"role": "", "display_name": username, "doc_code": "", "allowed_prefixes": []}
+            return {"user_id": None, "role": "", "display_name": username, "doc_code": "", "allowed_prefixes": []}
         
         user = user_res.data[0]
         user_id = user.get("id")
@@ -294,6 +294,7 @@ async def get_user_permissions(username: str) -> dict:
         
         allowed_prefixes = get_allowed_prefixes(role)
         return {
+            "user_id": user_id,
             "role": role, 
             "display_name": display_name, 
             "doc_code": doc_code,
@@ -302,4 +303,4 @@ async def get_user_permissions(username: str) -> dict:
         
     except Exception as e:
         logger.error(f"Permission fetch error: {e}")
-        return {"role": "", "display_name": username, "doc_code": "", "allowed_prefixes": []}
+        return {"user_id": None, "role": "", "display_name": username, "doc_code": "", "allowed_prefixes": []}

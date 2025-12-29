@@ -111,6 +111,8 @@ async def get_system_status():
     """
     系統狀態檢查 (公開端點，供登入頁面使用)
     
+    使用 asyncio.gather 並行執行檢查（Server 現在是獨立進程，async 安全）
+    
     Returns:
         intranet: 內網連線狀態 (ok/error)
         database: 資料庫連線狀態 (ok/error)
@@ -127,37 +129,43 @@ async def get_system_status():
         except Exception:
             return {"status": "error"}
     
-    # 資料庫連線狀態: role_definitions 只查詢一次，連線狀態每次輕量檢查
     global _db_verified, _cached_role_definitions
     
     async def check_database():
-        """檢查資料庫連線 (輕量 ping)"""
+        """檢查資料庫連線 (HTTP 連線檢查)"""
         try:
             from app.db.client import get_supabase_client
-            import httpx
-            client = get_supabase_client()
-            # 使用 HEAD 請求輕量檢查 Supabase REST API 是否可達
+            client = get_supabase_client(use_user_jwt=False)
+            base_url = str(client.supabase_url).rstrip('/')
+            
+            # 帶上 Key 避免 401
+            headers = {
+                "apikey": client.supabase_key,
+                "Authorization": f"Bearer {client.supabase_key}"
+            }
+            
             async with httpx.AsyncClient(timeout=3.0) as http_client:
-                # 只檢查連線，不實際查詢資料
-                resp = await http_client.head(f"{client.supabase_url}/rest/v1/")
+                # 使用 GET 請求根目錄 (通常返回 JSON 文檔)
+                resp = await http_client.get(f"{base_url}/rest/v1/", headers=headers)
                 return {"status": "ok" if resp.status_code < 500 else "error"}
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Database check failed: {e}")
             return {"status": "error"}
     
     async def fetch_role_definitions():
         """取得角色定義 (首次查詢後快取)"""
         global _db_verified, _cached_role_definitions
         
-        # 已有快取，直接返回
         if _cached_role_definitions is not None:
             return _cached_role_definitions
         
         try:
             from app.db.client import get_supabase_client
             client = get_supabase_client()
+            # Run sync call in executor
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(
-                None, 
+                None,
                 lambda: client.table("settings").select("value").eq("key", "role_definitions").execute()
             )
             
@@ -167,9 +175,8 @@ async def get_system_status():
                 role_definitions = role_data.get("roles", {})
             
             _db_verified = True
-            _cached_role_definitions = role_definitions  # 快取結果
+            _cached_role_definitions = role_definitions
             
-            # 快取角色權限定義 (讓 check_task_permission 使用)
             if role_definitions:
                 set_cached_role_permissions(role_definitions)
                 logger.info(f"Cached role_definitions: {list(role_definitions.keys())}")
@@ -178,7 +185,7 @@ async def get_system_status():
         except Exception:
             return _cached_role_definitions or {}
     
-    # 平行執行三個檢查
+    # 並行執行三個檢查
     intranet_result, database_result, role_definitions = await asyncio.gather(
         check_intranet(),
         check_database(),

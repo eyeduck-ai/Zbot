@@ -8,6 +8,8 @@ Usage:
     uv run python scripts/build_release.py release --patch    # Auto-increment patch (1.2.0 → 1.2.1)
     uv run python scripts/build_release.py release --minor    # Auto-increment minor (1.2.0 → 1.3.0)
     uv run python scripts/build_release.py release --major    # Auto-increment major (1.2.0 → 2.0.0)
+    uv run python scripts/build_release.py upload-launcher    # Upload launcher to dedicated release
+    uv run python scripts/build_release.py upload-launcher --build  # Build + upload launcher
     uv run python scripts/build_release.py --help
 
 Note: This script should be run on Windows for packaging.
@@ -27,19 +29,20 @@ PROJECT_ROOT = Path(__file__).parent.parent
 FRONTEND_DIR = PROJECT_ROOT / "frontend"
 BACKEND_DIR = PROJECT_ROOT / "backend"
 LAUNCHER_DIR = PROJECT_ROOT / "zbot_launcher"
-ASSETS_DIR = PROJECT_ROOT / "assets"
+
 DIST_DIR = PROJECT_ROOT / "dist"
 BUILD_DIR = PROJECT_ROOT / "build"
 
 # Output names
-MAIN_APP_NAME = "Zbot_Main"
+MAIN_APP_NAME = "Zbot_Server"  # Changed from Zbot_Main for new architecture
 LAUNCHER_NAME = "Zbot"
 
 
 def run_cmd(cmd: list[str], cwd: Path = None, check: bool = True) -> subprocess.CompletedProcess:
     """Run command and print output."""
     print(f"  → {' '.join(cmd)}")
-    return subprocess.run(cmd, cwd=cwd, check=check)
+    # Use shell=True on Windows to properly resolve npm, git, etc.
+    return subprocess.run(cmd, cwd=cwd, check=check, shell=True)
 
 
 def get_latest_git_tag() -> str | None:
@@ -135,11 +138,29 @@ def build_frontend():
 
 
 def build_main_app():
-    """Build Zbot_Main with PyInstaller."""
-    print("\n🔨 Building Zbot_Main...")
-    spec_file = PROJECT_ROOT / "zbot_main.spec"
-    run_cmd(["pyinstaller", "--clean", str(spec_file)], cwd=PROJECT_ROOT)
-    print("  ✓ Zbot_Main built")
+    """Build the main FastAPI server (Zbot_Server)."""
+    print("\n🔨 Building Zbot_Server...")
+    
+    # Run PyInstaller from backend directory with zbot_server.spec
+    # Output to ../dist (root dist)
+    cmd = [
+        "uv", "run", "pyinstaller",
+        "--clean",
+        "--distpath", "../dist",
+        "--workpath", "../build",
+        "zbot_server.spec"  # New spec file for server-only build
+    ]
+    
+    print(f"  → {' '.join(cmd)}")
+    
+    # Execute in backend directory
+    result = subprocess.run(cmd, cwd="backend", check=False)
+    
+    if result.returncode != 0:
+        print("❌ Server build failed!")
+        sys.exit(1)
+        
+    print("  ✓ Zbot_Server built")
 
 
 def copy_assets():
@@ -150,43 +171,43 @@ def copy_assets():
     dest_assets = DIST_DIR / MAIN_APP_NAME / "assets"
     dest_assets.mkdir(parents=True, exist_ok=True)
     
-    # Copy icon
-    icon_src = ASSETS_DIR / "icon.ico"
+    # Copy icon (source is logo.ico, dest is icon.ico for compatibility with run_app.py)
+    # Copy icon (source is zbot_launcher/assets/icon.ico)
+    icon_src = LAUNCHER_DIR / "assets" / "icon.ico"
     if icon_src.exists():
         shutil.copy(icon_src, dest_assets / "icon.ico")
-        print(f"  ✓ Copied icon.ico")
+        print(f"  ✓ Copied icon.ico from launcher assets")
     else:
         print(f"  ⚠️  icon.ico not found at {icon_src}")
 
 
 def build_launcher():
-    """Build Zbot launcher with PyInstaller."""
+    """Build Zbot launcher with PyInstaller using workspace dependencies."""
     print("\n🚀 Building Zbot launcher...")
     
-    # Install launcher dependencies using uv
-    req_file = LAUNCHER_DIR / "requirements.txt"
-    if req_file.exists():
-        run_cmd(["uv", "pip", "install", "-r", str(req_file)])
-    
     spec_file = LAUNCHER_DIR / "zbot.spec"
-    run_cmd(["pyinstaller", "--clean", str(spec_file)], cwd=LAUNCHER_DIR)
+    # Use uv run from project root to use workspace dependencies
+    run_cmd(["uv", "run", "pyinstaller", "--clean", str(spec_file)], cwd=PROJECT_ROOT)
     
-    # Move launcher to main dist
-    launcher_exe = LAUNCHER_DIR / "dist" / f"{LAUNCHER_NAME}.exe"
-    if launcher_exe.exists():
-        DIST_DIR.mkdir(parents=True, exist_ok=True)
-        shutil.copy(launcher_exe, DIST_DIR / f"{LAUNCHER_NAME}.exe")
+    # Move launcher to main dist (output is in project root dist/)
+    launcher_exe = DIST_DIR / f"{LAUNCHER_NAME}.exe"
+    if not launcher_exe.exists():
+        # Check if it's in LAUNCHER_DIR/dist (fallback)
+        launcher_exe = LAUNCHER_DIR / "dist" / f"{LAUNCHER_NAME}.exe"
+        if launcher_exe.exists():
+            DIST_DIR.mkdir(parents=True, exist_ok=True)
+            shutil.copy(launcher_exe, DIST_DIR / f"{LAUNCHER_NAME}.exe")
     
     print("  ✓ Launcher built")
 
 
 def create_release_zip(version: str) -> Path:
-    """Create release ZIP for Zbot_Main."""
+    """Create release ZIP for Zbot_Server."""
     print("\n📁 Creating release ZIP...")
     
     main_app_dir = DIST_DIR / MAIN_APP_NAME
     if not main_app_dir.exists():
-        raise FileNotFoundError(f"Zbot_Main not found at {main_app_dir}")
+        raise FileNotFoundError(f"Zbot_Server not found at {main_app_dir}")
     
     zip_name = f"{MAIN_APP_NAME}_v{version}_win64"
     zip_path = DIST_DIR / zip_name
@@ -258,20 +279,86 @@ def upload_to_gdrive(zip_path: Path) -> str | None:
     print(f"\n☁️  Uploading to Google Drive...")
     
     # Check if rclone is available
-    result = subprocess.run(["rclone", "--version"], capture_output=True)
-    if result.returncode == 0:
-        # Assumes rclone remote named "gdrive" is configured
-        dest = f"gdrive:Zbot/releases/{zip_path.name}"
-        try:
-            run_cmd(["rclone", "copy", str(zip_path), dest])
-            print(f"  ✓ Uploaded to Google Drive: {dest}")
-            return dest
-        except subprocess.CalledProcessError:
-            print("  ⚠️  rclone upload failed")
+    try:
+        result = subprocess.run(["rclone", "--version"], capture_output=True)
+        if result.returncode != 0:
+            raise FileNotFoundError("rclone not found")
+    except FileNotFoundError:
+        print("  ⚠️  Google Drive upload skipped (rclone not installed)")
+        print(f"  ℹ️  Manually upload: {zip_path}")
+        return None
     
-    print("  ⚠️  Google Drive upload skipped (rclone not configured)")
-    print(f"  ℹ️  Manually upload: {zip_path}")
-    return None
+    # Assumes rclone remote named "gdrive" is configured
+    dest = f"gdrive:Zbot/releases/{zip_path.name}"
+    try:
+        run_cmd(["rclone", "copy", str(zip_path), dest])
+        print(f"  ✓ Uploaded to Google Drive: {dest}")
+        return dest
+    except subprocess.CalledProcessError:
+        print("  ⚠️  rclone upload failed")
+        print(f"  ℹ️  Manually upload: {zip_path}")
+        return None
+
+
+def upload_launcher_release():
+    """Upload launcher to a dedicated GitHub release with stable URL."""
+    print("\n🚀 Uploading launcher to GitHub...")
+    
+    launcher_exe = DIST_DIR / f"{LAUNCHER_NAME}.exe"
+    if not launcher_exe.exists():
+        # Try from launcher build directory
+        launcher_exe = LAUNCHER_DIR / "dist" / f"{LAUNCHER_NAME}.exe"
+    
+    if not launcher_exe.exists():
+        print("  ❌ Launcher not found. Run 'build' first.")
+        return False
+    
+    # Check if gh CLI is available
+    result = subprocess.run(["gh", "--version"], capture_output=True)
+    if result.returncode != 0:
+        print("  ❌ GitHub CLI (gh) not installed")
+        print("  ℹ️  Install: https://cli.github.com/")
+        return False
+    
+    tag = "launcher"
+    
+    # Check if release exists
+    result = subprocess.run(
+        ["gh", "release", "view", tag],
+        capture_output=True, cwd=PROJECT_ROOT
+    )
+    
+    if result.returncode == 0:
+        # Release exists, update it
+        print(f"  ℹ️  Updating existing '{tag}' release...")
+        run_cmd([
+            "gh", "release", "upload", tag,
+            str(launcher_exe),
+            "--clobber"
+        ], cwd=PROJECT_ROOT)
+    else:
+        # Create new release
+        print(f"  ℹ️  Creating new '{tag}' release...")
+        run_cmd([
+            "gh", "release", "create", tag,
+            str(launcher_exe),
+            "--title", "Zbot Launcher",
+            "--notes", "下載此檔案啟動 Zbot，會自動下載並更新主程式。\n\n⚠️ 此 Release 專門存放 Launcher，請勿刪除。",
+        ], cwd=PROJECT_ROOT)
+    
+    print("  ✓ Launcher uploaded")
+    print(f"  ℹ️  Download URL: https://github.com/<owner>/<repo>/releases/download/launcher/{LAUNCHER_NAME}.exe")
+    return True
+
+
+def cmd_upload_launcher(args):
+    """Upload launcher command."""
+    if args.build:
+        print("\n🔨 Building launcher first...")
+        build_launcher()
+    
+    upload_launcher_release()
+    print("\n✅ Launcher upload complete!")
 
 
 def cmd_build(args):
@@ -324,6 +411,8 @@ def cmd_release(args):
     # Upload to GitHub
     if args.github:
         create_github_release(version, zip_path)
+        # Also upload launcher to dedicated release
+        upload_launcher_release()
     
     # Upload to Google Drive
     if args.gdrive:
@@ -366,6 +455,12 @@ def main():
     release_parser.add_argument("--no-gdrive", dest="gdrive", action="store_false",
                                 help="Skip Google Drive upload")
     release_parser.set_defaults(func=cmd_release, tag=True, github=True, gdrive=True, bump=None)
+    
+    # Upload-launcher command
+    upload_parser = subparsers.add_parser("upload-launcher", help="Upload launcher to dedicated GitHub release")
+    upload_parser.add_argument("--build", action="store_true",
+                               help="Build launcher before uploading")
+    upload_parser.set_defaults(func=cmd_upload_launcher, build=False)
     
     args = parser.parse_args()
     args.func(args)

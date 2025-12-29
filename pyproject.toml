@@ -1,0 +1,23 @@
+# Zbot Workspace Configuration
+# This pyproject.toml manages the UV workspace for all Python projects
+
+[project]
+name = "zbot-workspace"
+version = "0.1.0"
+description = "Zbot Workspace - 眼科門診自動化助理"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
+
+[tool.uv.workspace]
+members = ["backend", "zbot_launcher"]
+
+[tool.uv]
+# Mark root as virtual - not an installable package
+package = false
+
+[dependency-groups]
+dev = [
+    "pyinstaller>=6.0.0",
+    "infi-systray>=0.1.12",
+]

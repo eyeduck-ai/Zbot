@@ -119,35 +119,41 @@ def create_or_update_config(data: ConfigData):
 
 
 @router.post("/test")
-async def test_supabase_connection(data: ConfigTestRequest):
+def test_supabase_connection(data: ConfigTestRequest):
     """
     測試 Supabase 連線
     
     使用提供的 URL 和 Key 嘗試連線 Supabase
+    支援傳統 JWT anon key 和新版 sb_publishable_ / sb_secret_ 格式
     """
     try:
+        # 使用 Supabase SDK 測試連線
+        # SDK 可以正確處理新格式的 key (sb_publishable_, sb_secret_)
         from supabase import create_client
         
+        # 創建臨時 client 進行測試
         client = create_client(data.supabase_url, data.supabase_key)
         
-        # 嘗試簡單查詢來驗證連線
-        # 使用 settings 表，應該在所有專案都存在
-        result = client.table("settings").select("key").limit(1).execute()
+        # 嘗試 auth 操作 (不需要資料庫存取，但驗證 client 可連線)
+        # get_session() 是輕量操作，不會因為沒登入而報錯
+        session = client.auth.get_session()
         
+        # 如果到這裡沒有拋出異常，代表連線成功
         return {
             "success": True,
             "message": "連線成功！"
         }
+
     except Exception as e:
         error_msg = str(e)
+        logger.error(f"Supabase connection test failed: {error_msg}")
         
-        # 提供更友善的錯誤訊息
         if "Invalid API key" in error_msg or "401" in error_msg:
-            detail = "API Key 無效，請確認 Key 是否正確"
-        elif "Could not find" in error_msg or "404" in error_msg:
-            detail = "找不到專案，請確認 URL 是否正確"
-        elif "ConnectionError" in error_msg:
-            detail = "無法連線到 Supabase，請檢查網路"
+            detail = "API Key 無效，請確認 Key 是否正確 (需為 anon public key)"
+        elif "ConnectError" in error_msg or "gaierror" in error_msg:
+             detail = "無法連線到 Supabase，請檢查 URL 或網路"
+        elif "Invalid URL" in error_msg:
+             detail = "URL 格式錯誤"
         else:
             detail = f"連線失敗: {error_msg}"
         

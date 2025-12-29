@@ -1,8 +1,9 @@
 """
 Supabase Client
 
-簡化版本：統一使用 SUPABASE_KEY 建立 client
-Key 類型（anon 或 service_role）由使用者填入的值決定權限
+支援 RLS：
+- 建立 client 時使用 publishable key (apikey header)
+- 每個請求帶上用戶的 JWT (Authorization header) 以通過 RLS
 """
 
 from contextvars import ContextVar
@@ -13,10 +14,10 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Context variable for storing current user's JWT (for compatibility)
+# Context variable for storing current user's JWT (for RLS)
 _current_user_jwt: ContextVar[str] = ContextVar("current_user_jwt", default="")
 
-# Cached client (singleton)
+# Cached base client (singleton, without user context)
 _client: Client = None
 
 
@@ -24,32 +25,63 @@ def set_current_user_jwt(jwt: str):
     """
     設定當前請求的使用者 JWT (由 middleware 調用)
     
-    注意：此函數保留以維持向下相容，但目前簡化版 client 不使用此值
+    此 JWT 用於 Supabase RLS 驗證
     """
     _current_user_jwt.set(jwt)
 
 
-def get_supabase_client() -> Client:
+def get_current_user_jwt() -> str:
+    """取得當前用戶的 JWT"""
+    return _current_user_jwt.get()
+
+
+def get_supabase_client(use_user_jwt: bool = True) -> Client:
     """
     取得 Supabase Client
     
-    使用 settings 中的 SUPABASE_KEY，權限由 key 類型自動決定：
-    - anon key: 受 RLS 限制
-    - service_role key: 繞過 RLS
+    Args:
+        use_user_jwt: 是否使用用戶 JWT（預設 True，用於 RLS）
+                      設為 False 時只使用 publishable key
     
     Returns:
-        Supabase Client (cached singleton)
+        Supabase Client
+        
+    RLS 注意事項：
+    - publishable key: 用於 apikey header
+    - 用戶 JWT: 用於 Authorization header，讓 RLS 能識別用戶
     """
-    global _client
+    settings = get_settings()
     
+    if not settings.SUPABASE_URL or not settings.SUPABASE_KEY:
+        raise ValueError("SUPABASE_URL and SUPABASE_KEY must be set in config")
+    
+    # 如果需要使用用戶 JWT，每次都要建立新的 client 帶上 JWT
+    if use_user_jwt:
+        user_jwt = _current_user_jwt.get()
+        if user_jwt:
+            # 建立帶用戶 JWT 的 client
+            # Supabase SDK 會用這個 key 作為 Authorization header
+            client = create_client(settings.SUPABASE_URL, user_jwt)
+            
+            # 確保 apikey header 仍然是 publishable key
+            # Supabase SDK 預設會用傳入的 key 同時設定 apikey 和 Authorization
+            # 這裡我們需要覆蓋 apikey
+            if hasattr(client, 'postgrest') and hasattr(client.postgrest, 'session'):
+                client.postgrest.session.headers['apikey'] = settings.SUPABASE_KEY
+            
+            return client
+    
+    # 無用戶 JWT 或不需要時，使用 cached client
+    global _client
     if _client is None:
-        settings = get_settings()
-        
-        if not settings.SUPABASE_URL or not settings.SUPABASE_KEY:
-            raise ValueError("SUPABASE_URL and SUPABASE_KEY must be set in config")
-        
+        logger.info(f"Initializing Supabase Client...")
+        logger.info(f"URL: {settings.SUPABASE_URL}")
+        # Log first 10 chars of key for debugging
+        masked_key = settings.SUPABASE_KEY[:15] + "..." if settings.SUPABASE_KEY else "None"
+        logger.info(f"KEY: {masked_key}")
+
         _client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
-        logger.info(f"Supabase client initialized for: {settings.SUPABASE_URL}")
+        logger.info(f"Supabase client initialized.")
     
     return _client
 
@@ -63,8 +95,8 @@ def reset_client():
 # 相容舊程式碼的別名
 def get_supabase_admin_client() -> Client:
     """
-    [相容性別名] 取得 Supabase Client
+    [相容性別名] 取得 Supabase Client (不使用用戶 JWT)
     
-    此函數為向下相容保留，行為等同 get_supabase_client()
+    此函數繞過 RLS，用於管理操作
     """
-    return get_supabase_client()
+    return get_supabase_client(use_user_jwt=False)

@@ -1,10 +1,14 @@
+<div align="center">
+
 # <img src="https://github.com/user-attachments/assets/68162a25-acfd-4a8d-984c-ad808f5691cb" width="40" valign="bottom"> Zbot
+
+</div>
 
 > 🏥 **眼科門診自動化助理** — 專為榮總眼科設計的智慧工作流程自動化工具
 
 Zbot 整合內網系統（EIP、CKS、Web9）與 Google Sheets，自動化處理手術紀錄、IVI 注射紀錄、待床追蹤、績效統計等日常繁瑣工作，讓醫師專注於臨床照護。
 
-[![Demo Video](https://img.youtube.com/vi/eenMQ8QS9fM/0.jpg)](https://www.youtube.com/watch?v=eenMQ8QS9fM)
+[![Demo Video](https://img.youtube.com/vi/eenMQ8QS9fM/maxresdefault.jpg)](https://www.youtube.com/watch?v=eenMQ8QS9fM)
 
 ---
 
@@ -19,14 +23,23 @@ Zbot 整合內網系統（EIP、CKS、Web9）與 Google Sheets，自動化處理
 
 ---
 
+## 📥 下載
+
+[![Download Zbot](https://img.shields.io/badge/Download-Zbot.exe-blue?style=for-the-badge&logo=windows)](https://github.com/eyeduck-ai/Zbot/releases/download/launcher/Zbot.exe)
+
+**[⬇️ 點此下載 Zbot.exe](https://github.com/eyeduck-ai/Zbot/releases/download/launcher/Zbot.exe)**
+
+---
+
 ## 🚀 使用方式
 
 ### 安裝 (使用者)
 
-1. 從 [GitHub Releases](https://github.com/your-org/Zbot/releases) 下載 `Zbot.exe`
-2. 執行 `Zbot.exe`，程式會自動下載最新版本
-3. 首次使用需設定 Supabase 連線資訊
-4. 使用 EIP 帳號登入即可開始使用
+1. 點擊上方按鈕下載 `Zbot.exe`
+2. 執行 `Zbot.exe`，程式會自動下載最新版 `Zbot_Server`
+3. 程式會顯示系統匣圖示，點擊可開啟瀏覽器或退出
+4. 首次使用需設定 Supabase 連線資訊
+5. 使用 EIP 帳號登入即可開始使用
 
 ### 更新
 
@@ -46,13 +59,14 @@ Zbot 整合內網系統（EIP、CKS、Web9）與 Google Sheets，自動化處理
 
 ```bash
 # Clone 專案
-git clone https://github.com/your-org/Zbot.git
+git clone https://github.com/eyeduck-ai/Zbot.git
 cd Zbot
 
-# 啟動後端
-cd backend
+# 安裝所有依賴 (使用 UV workspace)
 uv sync
-uv run uvicorn app.main:app --reload --port 5487
+
+# 啟動後端
+uv run uvicorn app.main:app --reload --port 5487 --app-dir backend
 
 # 啟動前端 (另開終端)
 cd frontend
@@ -66,6 +80,8 @@ npm run dev
 
 1. 開啟應用後會顯示設定頁面
 2. 填入 Supabase URL 和 API Key
+   - 支援傳統 `anon` Key (JWT 格式，以 `ey...` 開頭)
+   - 支援新版 `sb_publishable_` Key (Supabase 新格式)
 3. 使用 EIP 帳號登入
 
 ---
@@ -85,7 +101,12 @@ npm run dev
 
 ```
 Zbot/
-├── backend/                  # FastAPI 後端
+├── pyproject.toml            # UV Workspace 根設定
+├── .venv/                    # 統一的虛擬環境
+├── backend/                  # FastAPI 後端 (workspace member)
+│   ├── pyproject.toml        # Backend 依賴
+│   ├── run_server.py         # Server 入口點
+│   ├── zbot_server.spec      # PyInstaller spec
 │   ├── app/
 │   │   ├── routers/         # API 端點
 │   │   ├── tasks/           # 業務任務
@@ -97,9 +118,14 @@ Zbot/
 │       ├── pages/           # 頁面元件
 │       ├── components/      # 共用元件
 │       └── api/             # API Client
-├── scripts/                  # 發布腳本
-│   └── build_release.py
-└── zbot_launcher/            # Windows 啟動器
+├── zbot_launcher/            # Launcher + Systray (workspace member)
+│   ├── pyproject.toml        # Launcher 依賴
+│   ├── main.py               # 入口 + Systray 邏輯
+│   ├── zbot.spec             # PyInstaller spec
+│   └── assets/               # Launcher 專屬 assets (icon.ico)
+├── assets/                   # 共用 assets (logo.ico)
+└── scripts/                  # 發布腳本
+    └── build_release.py
 ```
 
 ---
@@ -110,7 +136,8 @@ Zbot/
 |------|------|
 | **後端** | FastAPI, Supabase, gspread, httpx |
 | **前端** | React 19, TypeScript, Vite, TailwindCSS |
-| **打包** | PyInstaller, infi.systray |
+| **打包** | PyInstaller |
+| **Systray** | infi.systray (Launcher) |
 
 ---
 

@@ -140,7 +140,7 @@ export default function ConfigSetupPage({ onComplete, configPath }: ConfigSetupP
                         <div>
                             <Input
                                 label="Supabase Key"
-                                placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6..."
+                                placeholder="sb_publishable_xxxxx 或 eyJhbGciOi..."
                                 value={supabaseKey}
                                 onChange={e => setSupabaseKey(e.target.value)}
                                 required

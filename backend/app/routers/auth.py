@@ -54,9 +54,14 @@ async def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(
 
     # 4. Issue Token (include doc_code and eip_id for Supabase RLS)
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    
+    # Use UUID as sub if available (standard), otherwise fallback to username
+    # This ensures auth.uid() in Supabase works correctly with UUID-based RLS
+    jwt_sub = permission_data.get("user_id") or form_data.username
+    
     access_token = create_access_token(
         data={
-            "sub": form_data.username,
+            "sub": jwt_sub,
             "eip_id": form_data.username,  # RLS 政策使用 eip_id 驗證
             "role": permission_data["role"],
             "display_name": permission_data["display_name"],

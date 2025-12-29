@@ -18,10 +18,13 @@
 # 1. 安裝 Python 套件管理器 (uv)
 powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
 
-# 2. 安裝 Node.js (前端編譯需要)
+# 2. 安裝 Python 3.12 (uv 自動管理)
+uv python install 3.12
+
+# 3. 安裝 Node.js (前端編譯需要)
 winget install OpenJS.NodeJS.LTS
 
-# 3. 安裝 GitHub CLI (發布 Release 需要)
+# 4. 安裝 GitHub CLI (發布 Release 需要)
 winget install GitHub.cli
 gh auth login
 # 選擇: GitHub.com → HTTPS → 瀏覽器登入
@@ -30,26 +33,23 @@ gh auth login
 ### Step 2: Clone 專案
 
 ```powershell
-git clone https://github.com/your-org/Zbot.git
+git clone https://github.com/eyeduck-ai/Zbot.git
 cd Zbot
 ```
 
 ### Step 3: 安裝專案依賴
 
 ```powershell
-# Backend 依賴
-cd backend
+# 安裝所有 Python 依賴 (使用 UV workspace)
 uv sync
-cd ..
 
 # Frontend 依賴
 cd frontend
 npm install
 cd ..
-
-# 打包工具依賴
-uv pip install pyinstaller infi.systray
 ```
+
+> 💡 **說明**：`uv sync` 會自動安裝 backend、launcher 和打包工具（pyinstaller）的所有依賴。
 
 ### Step 4: 驗證環境
 
@@ -99,10 +99,10 @@ uv run python scripts/build_release.py build
 
 1. ✅ 清理舊的 build 資料夾
 2. ✅ 建置 frontend (`npm run build`)
-3. ✅ 打包 Zbot_Main (PyInstaller `--onedir`, 含 tray icon)
-4. ✅ 打包 Zbot 啟動器 (PyInstaller `--onefile`)
-5. ✅ 複製 `assets/icon.ico` 到輸出目錄
-6. ✅ 建立 `Zbot_Main_vX.X.X_win64.zip`
+3. ✅ 打包 Zbot_Server (PyInstaller `--onedir`, 純後端服務)
+4. ✅ 打包 Zbot 啟動器 + Systray (PyInstaller `--onefile`)
+5. ✅ 複製 assets 到輸出目錄
+6. ✅ 建立 `Zbot_Server_vX.X.X_win64.zip`
 7. ✅ 建立 Git tag (`vX.X.X`) 並 push
 8. ✅ 建立 GitHub Release 並上傳 ZIP
 9. ✅ 上傳到 Google Drive (如果 rclone 已設定)
@@ -113,27 +113,25 @@ uv run python scripts/build_release.py build
 
 ```
 dist/
-├── Zbot.exe                          # 啟動器 (分發給使用者)
-├── Zbot_Main/                        # 主程式資料夾
-│   ├── Zbot_Main.exe                 # 主程式 (無 console 視窗)
+├── Zbot.exe                          # 啟動器 + Systray (分發給使用者)
+├── Zbot_Server/                      # 後端服務器資料夾
+│   ├── Zbot_Server.exe               # 後端服務 (無 console 視窗)
 │   ├── assets/
-│   │   └── icon.ico                  # 托盤圖示
+│   │   └── icon.ico                  # 應用程式圖示
 │   ├── _internal/
 │   └── frontend/                     # 編譯好的前端
-├── Zbot_Main_v1.2.0_win64.zip       # 上傳到 GitHub Release
+├── Zbot_Server_v1.2.0_win64.zip     # 上傳到 GitHub Release
 └── version.json                      # 版本資訊
 ```
 
 ---
 
-## 主程式特性
+## 架構說明
 
-| 功能 | 說明 |
+| 元件 | 說明 |
 |------|------|
-| **System Tray** | 程式啟動後在系統托盤顯示圖示 |
-| **無 Console** | 不會顯示命令列視窗 |
-| **右鍵選單** | 開啟瀏覽器 / 結束程式 |
-| **單一實例** | 重複執行只會開啟瀏覽器 |
+| **Zbot.exe** | Launcher + Systray，負責更新、管理 Server 生命週期、顯示系統匣圖示 |
+| **Zbot_Server.exe** | 純後端服務 (uvicorn + FastAPI)，作為獨立進程運行 |
 
 ---
 
@@ -145,11 +143,13 @@ Launcher (`Zbot.exe`) 是一個輕量的自動更新工具，與主程式 (`Zbot
 
 ```
 zbot_launcher/
-├── main.py           # 啟動器入口
+├── main.py           # 啟動器入口 + Systray 邏輯
 ├── updater.py        # 自動更新邏輯
 ├── config.py         # 設定 (GitHub API URL, 路徑等)
-├── requirements.txt  # 依賴 (requests, packaging)
-└── zbot.spec         # PyInstaller 設定
+├── pyproject.toml    # 依賴 (httpx, packaging, infi-systray)
+├── zbot.spec         # PyInstaller 設定
+└── assets/           # Launcher 專屬 assets
+    └── icon.ico      # Systray 圖示
 ```
 
 ### 更新機制
@@ -162,7 +162,7 @@ Launcher 啟動時會執行以下流程：
 ├─────────────────────────────────────────────────────────────┤
 │  1. 檢查本地版本 (%LOCALAPPDATA%\Zbot\version.json)          │
 │                          ↓                                   │
-│  2. 查詢 GitHub API (/releases/latest)                       │
+│  2. 查詢 GitHub API (/releases)                               │
 │                          ↓                                   │
 │  3. 比較版本號 (Semantic Versioning)                          │
 │                          ↓                                   │
@@ -172,7 +172,9 @@ Launcher 啟動時會執行以下流程：
 │  │ 更新 version   │     │                  │                 │
 │  └───────────────┘     └─────────────────┘                  │
 │                          ↓                                   │
-│  4. 啟動 Zbot_Main.exe                                       │
+│  4. 啟動 Zbot_Server.exe (子進程)                              │
+│                          ↓                                   │
+│  5. 開啟瀏覽器 + 顯示 Systray 圖示                               │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -180,48 +182,54 @@ Launcher 啟動時會執行以下流程：
 
 ```
 %LOCALAPPDATA%\Zbot\
-├── Zbot_Main/           # 主程式 (自動下載)
-│   ├── Zbot_Main.exe
+├── Zbot_Server/         # 後端服務器 (自動下載)
+│   ├── Zbot_Server.exe
 │   ├── frontend/
 │   └── ...
+├── assets/              # 共用 assets
+│   └── icon.ico
 ├── version.json         # 目前版本記錄
 └── downloads/           # 暫存下載檔案
 ```
 
 ### 何時需要更新 Launcher？
 
-Launcher 本身很少需要更新，因為它只負責：
-- 檢查版本
-- 下載 ZIP
-- 啟動主程式
+Launcher 本身很少需要更新，因為它負責：
+- 檢查版本、下載 ZIP
+- 啟動和管理 Server 進程
+- 顯示 Systray 圖示
 
 **需要更新 Launcher 的情況**：
 - 修改 GitHub API 或 Release 格式
 - 修改下載/解壓邏輯
 - 修改使用者端安裝路徑
+- 修改 Systray 功能或圖示
 
 **不需要更新 Launcher 的情況**：
 - 新增功能到主程式
 - 修改後端 API
 - 修改前端 UI
 
-### 單獨打包 Launcher
+### 上傳 Launcher 到 GitHub
 
-通常不需要單獨打包，但如果只需更新 Launcher：
+> 💡 **自動上傳**：執行 `release` 命令時會自動上傳 Launcher 到專用 release，通常不需要手動執行此步驟。
+
+Launcher 存放在一個專門的 GitHub Release (tag: `launcher`)，提供固定的下載連結。
 
 ```powershell
-cd zbot_launcher
+# 手動上傳已編譯的 launcher（通常不需要）
+uv run python scripts/build_release.py upload-launcher
 
-# 安裝依賴
-uv pip install -r requirements.txt
-
-# 打包
-pyinstaller --clean zbot.spec
-
-# 輸出在 zbot_launcher/dist/Zbot.exe
+# 或手動編譯後直接上傳
+uv run python scripts/build_release.py upload-launcher --build
 ```
 
-> ⚠️ **注意**：更新 Launcher 後需要手動分發新的 `Zbot.exe` 給所有使用者。主程式可以自動更新，但 Launcher 本身無法自動更新。
+執行後，使用者可從以下固定連結下載：
+```
+https://github.com/eyeduck-ai/Zbot/releases/download/launcher/Zbot.exe
+```
+
+> ⚠️ **注意**：更新 Launcher 後，使用者需重新下載 `Zbot.exe`。主程式可以自動更新，但 Launcher 本身無法自動更新。
 
 ---
 
@@ -262,7 +270,7 @@ uv run python scripts/build_release.py release 1.5.0 --no-gdrive
 2. 啟動器檢查 GitHub `/releases/latest`
 3. 比較 `tag_name` 與本地 `version.json`
 4. 若有新版，下載 ZIP 並解壓到 `%LOCALAPPDATA%/Zbot/`
-5. 啟動 `Zbot_Main.exe` → 顯示托盤圖示 → 開啟瀏覽器
+5. 啟動 `Zbot_Server.exe` → 顯示托盤圖示 → 開啟瀏覽器
 
 ---
 
