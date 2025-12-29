@@ -8,7 +8,7 @@
 
 Zbot 整合內網系統（EIP、CKS、Web9）與 Google Sheets，自動化處理手術紀錄、IVI 注射紀錄、待床追蹤、績效統計等日常繁瑣工作，讓醫師專注於臨床照護。
 
-[![Demo Video](https://img.youtube.com/vi/eenMQ8QS9fM/maxresdefault.jpg)](https://www.youtube.com/watch?v=eenMQ8QS9fM)
+[![Demo Video](https://img.youtube.com/vi/eenMQ8QS9fM/hqdefault.jpg)](https://www.youtube.com/watch?v=eenMQ8QS9fM)
 
 ---
 
@@ -27,7 +27,7 @@ Zbot 整合內網系統（EIP、CKS、Web9）與 Google Sheets，自動化處理
 
 [![Download Zbot](https://img.shields.io/badge/Download-Zbot.exe-blue?style=for-the-badge&logo=windows)](https://github.com/eyeduck-ai/Zbot/releases/download/launcher/Zbot.exe)
 
-**[⬇️ 點此下載 Zbot.exe](https://github.com/eyeduck-ai/Zbot/releases/download/launcher/Zbot.exe)**
+
 
 ---
 
@@ -123,7 +123,7 @@ Zbot/
 │   ├── main.py               # 入口 + Systray 邏輯
 │   ├── zbot.spec             # PyInstaller spec
 │   └── assets/               # Launcher 專屬 assets (icon.ico)
-├── assets/                   # 共用 assets (logo.ico)
+
 └── scripts/                  # 發布腳本
     └── build_release.py
 ```
