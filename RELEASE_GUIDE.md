@@ -137,7 +137,7 @@ dist/
 
 ## Launcher 啟動器架構
 
-Launcher (`Zbot.exe`) 是一個輕量的自動更新工具，與主程式 (`Zbot_Main.exe`) 分離設計。
+Launcher (`Zbot.exe`) 是一個輕量的自動更新工具，與主程式 (`Zbot_Server.exe`) 分離設計。
 
 ### 目錄結構
 

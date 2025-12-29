@@ -80,8 +80,6 @@ npm run dev
 
 1. 開啟應用後會顯示設定頁面
 2. 填入 Supabase URL 和 API Key
-   - 支援傳統 `anon` Key (JWT 格式，以 `ey...` 開頭)
-   - 支援新版 `sb_publishable_` Key (Supabase 新格式)
 3. 使用 EIP 帳號登入
 
 ---
@@ -141,17 +139,7 @@ Zbot/
 
 ---
 
-## 📦 發布 (開發者)
 
-需在 Windows 環境執行：
-
-```powershell
-uv run python scripts/build_release.py release --patch
-```
-
-詳見 [RELEASE_GUIDE.md](RELEASE_GUIDE.md)
-
----
 
 ## 🔒 安全注意事項
 

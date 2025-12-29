@@ -265,7 +265,7 @@ uv sync
 | 欄位 | 說明 |
 |------|------|
 | `supabase_url` | Supabase 專案 URL |
-| `supabase_key` | Supabase API Key (anon 或 service_role) |
+| `supabase_key` | Supabase API Key |
 | `dev_mode` | 開發模式 - 不實際送出資料到內網 |
 | `log_level` | 日誌等級 (DEBUG/INFO/WARNING/ERROR) |
 | `test_eip_id/psw` | 測試用 EIP 帳密 (可選) |
