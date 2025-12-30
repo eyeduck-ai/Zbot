@@ -209,6 +209,7 @@ if JobManager.is_cancelled(job_id):
 | `stats.py` | `/api/stats/*` | 任務統計資料 |
 | `report.py` | `/api/report/*` | 回報/升等功能 |
 | `frontend_error.py` | `/api/frontend-error` | 前端錯誤回報 |
+| `system.py` | `/api/shutdown`, `/api/idle-status` | 伺服器管理（關閉、閒置狀態）|
 
 ### 公開端點
 
@@ -216,6 +217,78 @@ if JobManager.is_cancelled(job_id):
 GET /health          # 健康檢查
 GET /api/status      # 系統狀態 (內網/DB 連線)
 GET /api/test-supabase  # DB 連線測試
+POST /api/shutdown   # 關閉伺服器 (僅限 localhost)
+GET /api/idle-status # 閒置狀態查詢
+```
+
+---
+
+## Server 生命週期管理
+
+> 📖 **相關文檔**：[LAUNCHER_GUIDE](../zbot_launcher/LAUNCHER_GUIDE.md) - Launcher 端的實作細節
+
+### 概述
+
+Zbot Server 與 Launcher 之間有雙向健康監控機制，確保進程正確管理。
+
+```
+Launcher                              Server
+   │                                    │
+   │──── subprocess.Popen ────────────▶ │
+   │                                    │
+   │◀─── poll() 每 10s ────────────────│
+   │     exit_code != 0 → 自動重啟      │
+   │                                    │
+   │                psutil.pid_exists() │◀── 每 5s
+   │                Launcher 不見 → 自殺 │
+```
+
+### 自動關閉機制
+
+| 機制 | 位置 | 說明 |
+|------|------|------|
+| **Idle Timeout** | `middleware/idle_tracker.py` | 30 分鐘無有意義活動自動關閉 |
+| **PPID 監控** | `run_server.py` | 每 5 秒檢查 Launcher 是否存活 |
+| **Shutdown API** | `routers/system.py` | `POST /api/shutdown` 優雅關閉 |
+
+### Idle Timeout 排除路徑
+
+以下路徑不會重置閒置計時器（視為輪詢而非真實活動）：
+
+```python
+EXCLUDED_PATHS = [
+    "/api/tasks/jobs",   # 任務狀態輪詢
+    "/api/status",       # 健康檢查
+    "/health",           # 健康檢查
+    "/favicon.ico",      # 瀏覽器請求
+]
+```
+
+### Exit Code 約定
+
+Server 與 Launcher 透過 Exit Code 溝通：
+
+| Exit Code | 場景 | 觸發程式碼 | Launcher 行為 |
+|-----------|------|-----------|--------------|
+| **0** | Idle Timeout (30分鐘) | `os._exit(0)` | 退出 Launcher |
+| **0** | POST /api/shutdown | `os._exit(0)` | 退出 Launcher |
+| **0** | PPID 偵測 Launcher 不見 | `os._exit(0)` | N/A |
+| **1** | 程式錯誤 | `sys.exit(1)` | 自動重啟 (最多 3 次) |
+| **非 0** | 工作管理員強制終止 | N/A | 自動重啟 (最多 3 次) |
+
+### 防止重複進程
+
+Server 啟動時會檢查 Port 5487 是否已被佔用：
+
+```python
+# run_server.py
+def is_port_in_use(port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        return s.connect_ex(('127.0.0.1', port)) == 0
+
+if is_port_in_use(PORT):
+    logger.warning("Port already in use, exiting...")
+    sys.exit(0)
 ```
 
 ---

@@ -362,14 +362,38 @@ def cmd_upload_launcher(args):
 
 
 def cmd_build(args):
-    """Build command."""
-    clean_build()
-    build_frontend()
-    build_main_app()
-    copy_assets()
-    build_launcher()
+    """Build command.
     
-    print("\n✅ Build complete!")
+    With --only option, can build specific components:
+    - frontend: Build React frontend only
+    - server: Build Zbot_Server (backend) only  
+    - launcher: Build Zbot.exe (launcher) only
+    - all (default): Build everything
+    """
+    target = getattr(args, 'only', 'all') or 'all'
+    
+    if target == 'all':
+        clean_build()
+        build_frontend()
+        build_main_app()
+        copy_assets()
+        build_launcher()
+        print("\n✅ Build complete! (all)")
+    elif target == 'frontend':
+        build_frontend()
+        print("\n✅ Frontend build complete!")
+    elif target == 'server':
+        build_main_app()
+        copy_assets()
+        print("\n✅ Server build complete!")
+    elif target == 'launcher':
+        build_launcher()
+        print("\n✅ Launcher build complete!")
+    else:
+        print(f"❌ Unknown target: {target}")
+        print("   Valid options: all, frontend, server, launcher")
+        return
+    
     print(f"   Output: {DIST_DIR}")
 
 
@@ -431,6 +455,8 @@ def main():
     
     # Build command
     build_parser = subparsers.add_parser("build", help="Build EXEs only")
+    build_parser.add_argument("--only", choices=["all", "frontend", "server", "launcher"],
+                              default="all", help="Build specific component only")
     build_parser.set_defaults(func=cmd_build)
     
     # Release command
