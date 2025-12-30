@@ -140,40 +140,45 @@ def test_supabase_connection(data: ConfigTestRequest):
     測試 Supabase 連線
     
     使用提供的 URL 和 Key 嘗試連線 Supabase
-    支援傳統 JWT anon key 和新版 sb_publishable_ / sb_secret_ 格式
+    透過實際發送請求驗證 key 有效性
     """
+    import httpx
+    
     try:
-        # 使用 Supabase SDK 測試連線
-        # SDK 可以正確處理新格式的 key (sb_publishable_, sb_secret_)
-        from supabase import create_client
+        # 基本格式驗證
+        if not data.supabase_url.startswith("https://"):
+            return {"success": False, "message": "URL 必須以 https:// 開頭"}
         
-        # 創建臨時 client 進行測試
-        client = create_client(data.supabase_url, data.supabase_key)
+        if not data.supabase_url.endswith(".supabase.co"):
+            return {"success": False, "message": "URL 格式錯誤，應為 https://xxx.supabase.co"}
         
-        # 嘗試 auth 操作 (不需要資料庫存取，但驗證 client 可連線)
-        # get_session() 是輕量操作，不會因為沒登入而報錯
-        session = client.auth.get_session()
+        # 使用 REST API 直接驗證 key
+        # 這會發送實際的網路請求，如果 key 無效會返回 401
+        api_url = f"{data.supabase_url}/rest/v1/"
         
-        # 如果到這裡沒有拋出異常，代表連線成功
-        return {
-            "success": True,
-            "message": "連線成功！"
+        headers = {
+            "apikey": data.supabase_key,
+            "Authorization": f"Bearer {data.supabase_key}",
         }
+        
+        with httpx.Client(timeout=10.0) as client:
+            response = client.get(api_url, headers=headers)
+        
+        # 200 = 連線成功，取得 schema 資訊
+        # 401 = key 無效
+        # 其他狀態碼也可能表示連線問題
+        if response.status_code == 200:
+            return {"success": True, "message": "連線成功！"}
+        elif response.status_code == 401:
+            return {"success": False, "message": "API Key 無效，請確認 Key 是否正確"}
+        else:
+            return {"success": False, "message": f"連線失敗 (HTTP {response.status_code})"}
 
+    except httpx.ConnectError:
+        return {"success": False, "message": "無法連線到 Supabase，請檢查 URL 或網路"}
+    except httpx.TimeoutException:
+        return {"success": False, "message": "連線逾時，請稍後再試"}
     except Exception as e:
         error_msg = str(e)
         logger.error(f"Supabase connection test failed: {error_msg}")
-        
-        if "Invalid API key" in error_msg or "401" in error_msg:
-            detail = "API Key 無效，請確認 Key 是否正確 (需為 anon public key)"
-        elif "ConnectError" in error_msg or "gaierror" in error_msg:
-             detail = "無法連線到 Supabase，請檢查 URL 或網路"
-        elif "Invalid URL" in error_msg:
-             detail = "URL 格式錯誤"
-        else:
-            detail = f"連線失敗: {error_msg}"
-        
-        return {
-            "success": False,
-            "message": detail
-        }
+        return {"success": False, "message": f"連線失敗: {error_msg}"}
