@@ -244,6 +244,8 @@ Launcher                              Server
    │                Launcher 不見 → 自殺 │
 ```
 
+> **Note**: 瀏覽器由 Server 啟動時自動開啟（`run_server.py`），Launcher 不負責開啟瀏覽器。這確保 URL/Port 設定集中管理，開發與生產環境行為一致。
+
 ### 自動關閉機制
 
 | 機制 | 位置 | 說明 |

@@ -360,7 +360,7 @@ def startup_flow(ui):
     if remote_version and compare_versions(local_version, remote_version):
         ui.log(f"發現新版本: {remote_version}")
         if download_url:
-            ui.set_instruction(f"正在下載更新 v{remote_version}")
+            ui.set_instruction(f"正在下載更新 {remote_version}")
             ui.set_content("Downloading update...")
             
             # Switch to progress bar
@@ -433,11 +433,10 @@ def startup_flow(ui):
     global _manager_instance
     _manager_instance = manager
     
-    # 4. Open Browser
-    ui.set_content("正在開啟瀏覽器...")
-    ui.log("開啟控制台頁面...")
-    time.sleep(1.5) # Wait for server boot
-    manager.open_browser()
+    # 4. 等待 Server 開啟瀏覽器（由 Server 控制）
+    ui.set_content("等待伺服器就緒...")
+    ui.log("等待系統初始化完成...")
+    time.sleep(2)  # Give server time to boot and open browser
     
     ui.set_instruction("啟動完成")
     ui.set_content("即將最小化至系統匣...")
