@@ -61,28 +61,14 @@ def acquire_single_instance_lock():
     return True
 
 
-def hide_console():
-    """Hide the console window using Win32 API.
-    
-    This is called after the browser opens to allow
-    the launcher to run silently in the system tray.
-    """
-    try:
-        kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
-        user32 = ctypes.WinDLL('user32', use_last_error=True)
-        
-        hwnd = kernel32.GetConsoleWindow()
-        if hwnd:
-            user32.ShowWindow(hwnd, 0)  # SW_HIDE = 0
-            return True
-    except Exception:
-        pass
-    return False
-
-
 def show_error_messagebox(title: str, message: str):
     """Show a Windows MessageBox with an error icon."""
     ctypes.windll.user32.MessageBoxW(0, message, title, 0x10)  # MB_ICONERROR
+
+
+def show_info_messagebox(title: str, message: str):
+    """Show a Windows MessageBox with an info icon."""
+    ctypes.windll.user32.MessageBoxW(0, message, title, 0x40)  # MB_ICONINFORMATION
 
 
 class ZbotManager:
@@ -306,6 +292,12 @@ def check_and_update():
         print(f"[!] 發現新版本: {remote_version}")
         
         if download_url:
+            # Notify user about update (since console is hidden)
+            show_info_messagebox(
+                "Zbot 更新",
+                f"發現新版本 v{remote_version}，按下確定後將開始自動更新。\n(更新過程約 30 秒，完成後會自動啟動)"
+            )
+            
             # Terminate existing server
             terminate_main_app()
             
@@ -319,6 +311,7 @@ def check_and_update():
                     return True
                 else:
                     print("[!] 更新失敗")
+                    show_error_messagebox("更新失敗", "無法套用更新，將嘗試啟動舊版本。")
                     return os.path.exists(SERVER_EXE)
         else:
             print("[!] 找不到下載連結，跳過更新")
@@ -333,14 +326,18 @@ def main():
     # Check for single instance
     if not acquire_single_instance_lock():
         print("[!] Zbot 已在運行中")
-        time.sleep(2)
+        # Optional: Show message box? Usually not needed if it just quits silently or brings to front.
+        # But user might be confused if they click and nothing happens.
+        # show_error_messagebox("Zbot", "程式已在執行中")
         return
     
-    print_header()
+    # print_header() # Console hidden, no header needed
     
-    # Phase 1: Console visible - Check for updates
+    # Phase 1: Console (Hidden) - Check for updates
     if not check_and_update():
-        input("按 Enter 鍵結束...")
+        # If check failed and no local version, show error
+        if not os.path.exists(SERVER_EXE):
+             show_error_messagebox("Zbot", "無法連線更新且無本地版本，請檢查網路。")
         return
     
     # Create manager
@@ -350,7 +347,7 @@ def main():
     print("[.] 正在啟動伺服器...")
     if not manager.start_server():
         print("[✗] 無法啟動伺服器")
-        input("按 Enter 鍵結束...")
+        show_error_messagebox("Zbot 錯誤", "無法啟動伺服器核心 (Zbot_Server.exe)")
         return
     
     # Start server health monitor
@@ -361,11 +358,10 @@ def main():
     time.sleep(1.5)  # Wait for server to start
     manager.open_browser()
     
-    print("[✓] 已開啟瀏覽器，最小化至系統匣")
-    time.sleep(0.5)  # Let user see the message
+    # print("[✓] 已開啟瀏覽器，最小化至系統匣") # No console
     
-    # Phase 2: Hide console AFTER browser opens
-    hide_console()
+    # Phase 2: Hide console - REMOVED (NoConsole mode)
+    # hide_console()
     
     # Phase 3: Run with systray (silent)
     manager.run_with_systray()
