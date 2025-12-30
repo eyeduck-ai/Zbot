@@ -257,8 +257,7 @@ async def get_user_permissions(username: str) -> dict:
     Fetch user role, display_name, doc_code and allowed prefixes from Supabase.
     
     Queries:
-    - users table for display_name and doc_code
-    - user_roles table for role
+    - users table for display_name, doc_code, and role
     
     Returns:
         dict with 'role', 'display_name', 'doc_code' and 'allowed_prefixes' keys
@@ -269,8 +268,8 @@ async def get_user_permissions(username: str) -> dict:
 
     client = get_supabase_client()
     try:
-        # Query users table for user info
-        user_res = client.table("users").select("id, display_name, doc_code").eq("eip_id", username).execute()
+        # Query users table for user info (including role)
+        user_res = client.table("users").select("id, display_name, doc_code, role").eq("eip_id", username).execute()
         
         if not user_res.data or len(user_res.data) == 0:
             # User not found
@@ -280,13 +279,7 @@ async def get_user_permissions(username: str) -> dict:
         user_id = user.get("id")
         display_name = user.get("display_name", "") or username
         doc_code = user.get("doc_code", "")
-        
-        # Query user_roles table for role
-        role = ""
-        if user_id:
-            role_res = client.table("user_roles").select("role").eq("user_id", user_id).execute()
-            if role_res.data and len(role_res.data) > 0:
-                role = role_res.data[0].get("role", "").strip().lower()
+        role = (user.get("role", "") or "").strip().lower()
         
         # Normalize legacy values
         if role in ["all", "*"]:
@@ -304,3 +297,4 @@ async def get_user_permissions(username: str) -> dict:
     except Exception as e:
         logger.error(f"Permission fetch error: {e}")
         return {"user_id": None, "role": "", "display_name": username, "doc_code": "", "allowed_prefixes": []}
+
