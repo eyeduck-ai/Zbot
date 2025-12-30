@@ -28,6 +28,8 @@ dependencies = [
     "pygsheets>=2.0.6",
     # Email
     "aiosmtplib>=4.0.2",
+    # Process Management
+    "psutil>=5.9.0",
 ]
 
 [project.optional-dependencies]

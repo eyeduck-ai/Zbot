@@ -36,6 +36,10 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
 @app.on_event("startup")
 async def startup_event():
     logger.info("Application startup")
+    
+    # Start idle timeout checker
+    import asyncio
+    asyncio.create_task(check_idle_timeout())
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -73,6 +77,10 @@ app.include_router(stats_router)
 from app.routers.config import router as config_router
 app.include_router(config_router)
 
+# System API (伺服器管理)
+from app.routers.system import router as system_router
+app.include_router(system_router)
+
 origins = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
@@ -89,6 +97,29 @@ app.add_middleware(
 # RLS Context Middleware - 自動從請求提取 JWT 供 Supabase RLS 使用
 from app.middleware.rls_context import RLSContextMiddleware
 app.add_middleware(RLSContextMiddleware)
+
+# Idle Tracker Middleware - 追蹤使用者活動用於閒置超時
+from app.middleware.idle_tracker import IdleTrackerMiddleware
+app.add_middleware(IdleTrackerMiddleware)
+
+
+# --- Idle Timeout Background Task ---
+async def check_idle_timeout():
+    """
+    Background task that periodically checks if server has been idle
+    and initiates shutdown if timeout is exceeded.
+    """
+    import asyncio
+    import os
+    from app.middleware.idle_tracker import IdleTrackerMiddleware, DEFAULT_IDLE_TIMEOUT_SECONDS
+    
+    while True:
+        await asyncio.sleep(60)  # Check every minute
+        
+        if IdleTrackerMiddleware.is_idle():
+            idle_secs = IdleTrackerMiddleware.get_idle_seconds()
+            logger.info(f"Server idle for {idle_secs:.0f}s (timeout: {DEFAULT_IDLE_TIMEOUT_SECONDS}s), shutting down...")
+            os._exit(0)
 
 @app.get("/health")
 def read_root():

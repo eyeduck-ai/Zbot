@@ -74,6 +74,40 @@ def open_browser():
     time.sleep(1.5)
     webbrowser.open(URL)
 
+
+# --- Duplicate Process Prevention ---
+def is_port_in_use(port: int) -> bool:
+    """Check if a port is already in use."""
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        return s.connect_ex(('127.0.0.1', port)) == 0
+
+
+# --- PPID Heartbeat Detection ---
+def start_ppid_monitor(logger):
+    """Start background thread to monitor if launcher (parent process) is still alive.
+    
+    If the launcher is terminated (e.g., from Task Manager), the server will
+    automatically shut down to prevent orphan processes.
+    """
+    import psutil
+    
+    launcher_pid = os.getppid()
+    logger.info(f"Launcher PID: {launcher_pid}")
+    
+    def monitor():
+        while True:
+            import time
+            time.sleep(5)  # Check every 5 seconds
+            if not psutil.pid_exists(launcher_pid):
+                logger.info(f"Launcher (PID {launcher_pid}) is gone, shutting down server...")
+                os._exit(0)
+    
+    monitor_thread = threading.Thread(target=monitor, daemon=True)
+    monitor_thread.start()
+    logger.info("PPID monitor started")
+
+
 # --- Main ---
 def main():
     """Main entry point for Zbot Server."""
@@ -86,6 +120,12 @@ def main():
     logger.info(f"EXE_DIR: {EXE_DIR}")
     logger.info(f"Log file: {log_file}")
     
+    # Check for duplicate process
+    if is_port_in_use(PORT):
+        logger.warning(f"Port {PORT} already in use. Server may already be running.")
+        logger.info("Exiting to prevent duplicate process.")
+        sys.exit(0)
+    
     try:
         # Import app (this triggers all heavy imports like supabase, pyiceberg)
         # Since we're in main thread (not daemon), this is safe
@@ -94,6 +134,9 @@ def main():
         import uvicorn
         
         logger.info("FastAPI app imported successfully")
+        
+        # Start PPID monitor (detect if launcher is terminated)
+        start_ppid_monitor(logger)
         
         # Open browser in background
         threading.Thread(target=open_browser, daemon=True).start()
