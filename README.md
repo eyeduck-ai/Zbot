@@ -28,6 +28,12 @@ Zbot 整合內網系統（EIP、CKS、Web9）與 Google Sheets，自動化處理
 [![Download Zbot](https://img.shields.io/badge/Download-Zbot.exe-blue?style=for-the-badge&logo=windows)](https://github.com/eyeduck-ai/Zbot/releases/download/launcher/Zbot.exe)
 
 > ⚠️ **系統需求**：僅支援 **Windows** 作業系統（建議 Windows 10 以上）
+>
+> **初次執行警告**：
+> 由於程式未購買數位簽章，Windows SmartScreen 可能會跳出警告視窗。
+> 請點擊 `More info` (其他資訊) -> `Run anyway` (仍要執行) 即可。
+>
+> <img src="assets/smartscreen_warning.png" width="400" alt="SmartScreen Warning">
 
 ---
 
