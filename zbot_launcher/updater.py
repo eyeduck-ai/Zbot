@@ -129,17 +129,19 @@ def compare_versions(local: Optional[str], remote: Optional[str]) -> bool:
         return remote_clean != local_clean
 
 
-def download_with_progress(url: str, dest_path: str) -> bool:
+def download_with_progress(url: str, dest_path: str, progress_callback=None) -> bool:
     """
-    Download file with progress display.
-    Returns True on success.
-    Retries up to 3 times for initial connection.
+    Download file with progress reporting via callback.
+    callback(percent: int, message: str)
     """
     max_retries = 3
     retry_delay = 2
 
     for attempt in range(max_retries):
         try:
+            if progress_callback:
+                progress_callback(0, f"正在連線... (嘗試 {attempt+1}/{max_retries})")
+                
             with open(dest_path, "wb") as f:
                 with httpx.stream("GET", url, timeout=REQUEST_TIMEOUT, follow_redirects=True) as resp:
                     resp.raise_for_status()
@@ -154,20 +156,39 @@ def download_with_progress(url: str, dest_path: str) -> bool:
                             
                             if total_size > 0:
                                 percent = int(downloaded * 100 / total_size)
-                                bar_len = 20
-                                filled = int(bar_len * downloaded / total_size)
-                                bar = "█" * filled + "░" * (bar_len - filled)
-                                print(f"\r[↓] 正在下載... {percent:3d}% [{bar}]", end="", flush=True)
+                                if progress_callback:
+                                    # Update roughly every 5% or 100KB to avoid flooding message queue?
+                                    # Actually Windows message queue handles it fine, but we can throttle if needed.
+                                    # For now, just call it.
+                                    progress_callback(percent, f"下載中: {percent}% ({downloaded//1024} KB / {total_size//1024} KB)")
+                                else:
+                                    # Fallback to console if no callback
+                                    bar_len = 20
+                                    filled = int(bar_len * downloaded / total_size)
+                                    bar = "█" * filled + "░" * (bar_len - filled)
+                                    print(f"\r[↓] 正在下載... {percent:3d}% [{bar}]", end="", flush=True)
             
-            print()  # Newline after progress
+            if progress_callback:
+                progress_callback(100, "下載完成")
+            else:
+                print()
             return True
         
         except (httpx.RequestError, httpx.HTTPStatusError) as e:
+            msg = f"下載中斷 ({e})"
             if attempt < max_retries - 1:
-                print(f"\n[!] 下載中斷 ({e})，重試中 ({attempt+1}/{max_retries})...")
+                msg += f"，重試中..."
+                if progress_callback:
+                    progress_callback(0, msg)
+                else:
+                    print(f"\n[!] {msg}")
                 time.sleep(retry_delay)
             else:
-                print(f"\n[✗] 下載失敗: {e}")
+                msg = f"下載失敗: {e}"
+                if progress_callback:
+                    progress_callback(0, msg)
+                else:
+                    print(f"\n[✗] {msg}")
                 return False
     return False
 

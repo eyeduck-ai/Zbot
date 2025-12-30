@@ -104,6 +104,22 @@ def create_or_update_config(data: ConfigData):
     """
     try:
         config_dict = data.dict()
+        
+        # Check for existing config to handle masked key
+        if config_exists():
+            existing = load_config()
+            existing_key = existing.get("supabase_key", "")
+            
+            # Reconstruct the masked key to compare
+            masked_key = "***"
+            if len(existing_key) > 20:
+                masked_key = existing_key[:10] + "..." + existing_key[-10:]
+            
+            # If the submitted key matches the masked version, keep the original key
+            if data.supabase_key == masked_key:
+                config_dict["supabase_key"] = existing_key
+                logger.info("Preserved existing supabase_key (received masked value)")
+
         path = save_config(config_dict)
         
         logger.info(f"Config saved to: {path}")

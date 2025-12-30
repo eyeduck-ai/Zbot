@@ -130,7 +130,7 @@ dist/
 
 | 元件 | 說明 |
 |------|------|
-| **Zbot.exe** | Launcher + Systray，負責更新、管理 Server 生命週期、顯示系統匣圖示 |
+| **Zbot.exe** | Launcher + Systray，含 TaskDialog 進度視窗、自動更新、管理 Server 生命週期 |
 | **Zbot_Server.exe** | 純後端服務 (uvicorn + FastAPI)，作為獨立進程運行 |
 
 ---
@@ -145,9 +145,10 @@ Launcher (`Zbot.exe`) 是一個輕量的自動更新工具，與主程式 (`Zbot
 zbot_launcher/
 ├── main.py           # 啟動器入口 + Systray 邏輯
 ├── updater.py        # 自動更新邏輯
+├── ui_taskdialog.py  # 原生 Windows TaskDialog 進度視窗
 ├── config.py         # 設定 (GitHub API URL, 路徑等)
 ├── pyproject.toml    # 依賴 (httpx, packaging, infi-systray)
-├── zbot.spec         # PyInstaller 設定
+├── zbot.spec         # PyInstaller 設定 (console=False)
 └── assets/           # Launcher 專屬 assets
     └── icon.ico      # Systray 圖示
 ```
@@ -160,21 +161,23 @@ Launcher 啟動時會執行以下流程：
 ┌─────────────────────────────────────────────────────────────┐
 │                    Zbot.exe 啟動流程                         │
 ├─────────────────────────────────────────────────────────────┤
-│  1. 檢查本地版本 (%LOCALAPPDATA%\Zbot\version.json)          │
+│  1. 顯示 TaskDialog 啟動視窗 (正在初始化...)                  │
 │                          ↓                                   │
-│  2. 查詢 GitHub API (/releases)                               │
+│  2. 檢查本地版本 (%LOCALAPPDATA%\Zbot\version.json)          │
 │                          ↓                                   │
-│  3. 比較版本號 (Semantic Versioning)                          │
+│  3. 查詢 GitHub API (/releases)                               │
+│                          ↓                                   │
+│  4. 比較版本號 (Semantic Versioning)                          │
 │                          ↓                                   │
 │  ┌──── 有新版 ────┐     ┌──── 已是最新 ────┐                │
-│  │ 下載 ZIP       │     │                  │                 │
+│  │ 下載 ZIP (進度條)│     │                  │               │
 │  │ 解壓到 Zbot/   │     │                  │                 │
 │  │ 更新 version   │     │                  │                 │
 │  └───────────────┘     └─────────────────┘                  │
 │                          ↓                                   │
-│  4. 啟動 Zbot_Server.exe (子進程)                              │
+│  5. 啟動 Zbot_Server.exe (子進程)                              │
 │                          ↓                                   │
-│  5. 開啟瀏覽器 + 顯示 Systray 圖示                               │
+│  6. 開啟瀏覽器 → TaskDialog 自動關閉 → 最小化至 Systray        │
 └─────────────────────────────────────────────────────────────┘
 ```
 

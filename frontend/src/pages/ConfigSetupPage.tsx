@@ -4,7 +4,7 @@
  * 當系統偵測到沒有設定檔時顯示，讓使用者設定 Supabase 連線資訊。
  */
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Settings, CheckCircle, XCircle, Loader2, HelpCircle } from 'lucide-react';
 import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
@@ -57,6 +57,27 @@ export default function ConfigSetupPage({ onComplete, configPath }: ConfigSetupP
             setTesting(false);
         }
     };
+
+    // Load existing config if available
+    useEffect(() => {
+        const loadConfig = async () => {
+            try {
+                const res = await fetch('/api/config');
+                if (res.ok) {
+                    const data = await res.json();
+                    setSupabaseUrl(data.supabase_url || '');
+                    setSupabaseKey(data.supabase_key || '');
+                    setDevMode(data.dev_mode || false);
+                    setLogLevel(data.log_level || 'INFO');
+                    setTestEipId(data.test_eip_id || '');
+                    setTestEipPsw(data.test_eip_psw || '');
+                }
+            } catch (err) {
+                // Config might not exist, ignore
+            }
+        };
+        loadConfig();
+    }, []);
 
     // Save config
     const handleSave = async () => {

@@ -208,6 +208,7 @@ if JobManager.is_cancelled(job_id):
 | `templates.py` | `/api/templates/*` | 手術模板 CRUD |
 | `stats.py` | `/api/stats/*` | 任務統計資料 |
 | `report.py` | `/api/report/*` | 回報/升等功能 |
+| `config.py` | `/api/config/*` | 環境設定 CRUD (含遮罩 Key 保護) |
 | `frontend_error.py` | `/api/frontend-error` | 前端錯誤回報 |
 | `system.py` | `/api/shutdown`, `/api/idle-status` | 伺服器管理（關閉、閒置狀態）|
 

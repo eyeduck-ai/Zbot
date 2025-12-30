@@ -138,7 +138,7 @@ class ZbotManager:
     
     def open_config_page(self):
         """Open browser to Zbot config page."""
-        webbrowser.open(f"{SERVER_URL}/config")
+        webbrowser.open(f"{SERVER_URL}/?openConfig=true")
     
     def on_quit(self, systray=None):
         """Quit handler for system tray."""
@@ -292,27 +292,38 @@ def check_and_update():
         print(f"[!] 發現新版本: {remote_version}")
         
         if download_url:
-            # Notify user about update (since console is hidden)
-            show_info_messagebox(
-                "Zbot 更新",
-                f"發現新版本 v{remote_version}，按下確定後將開始自動更新。\n(更新過程約 30 秒，完成後會自動啟動)"
-            )
-            
-            # Terminate existing server
+            # Terminate server first to release locks
             terminate_main_app()
             
-            # Download update
-            zip_path = os.path.join(DOWNLOAD_DIR, "update.zip")
-            os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-            
-            if download_with_progress(download_url, zip_path):
-                if apply_update(zip_path):
-                    save_local_version(remote_version)
-                    return True
+            # Use Native TaskDialog for progress
+            try:
+                from ui_taskdialog import show_update_dialog
+                zip_path = os.path.join(DOWNLOAD_DIR, "update.zip")
+                os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+                
+                # Show dialog (blocking)
+                # It will handle download and apply_update via callbacks
+                if show_update_dialog(remote_version, download_url, download_with_progress, apply_update, zip_path):
+                     save_local_version(remote_version)
+                     return True
                 else:
-                    print("[!] 更新失敗")
-                    show_error_messagebox("更新失敗", "無法套用更新，將嘗試啟動舊版本。")
+                    # Update failed or user cancelled
+                    # show_error_messagebox handled inside show_update_dialog logic partly?
+                    # The worker task sets success=False
+                    # If failed, we fall back to existing version check
                     return os.path.exists(SERVER_EXE)
+                    
+            except ImportError:
+                # Fallback to silent update if ui_taskdialog fails to load/import (e.g. non-Windows)
+                 print("[!] UI 模組載入失敗，使用無介面更新")
+                 zip_path = os.path.join(DOWNLOAD_DIR, "update.zip")
+                 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+                 if download_with_progress(download_url, zip_path):
+                    if apply_update(zip_path):
+                        save_local_version(remote_version)
+                        return True
+                 return os.path.exists(SERVER_EXE)
+
         else:
             print("[!] 找不到下載連結，跳過更新")
     else:
@@ -322,49 +333,147 @@ def check_and_update():
     return os.path.exists(SERVER_EXE)
 
 
+def startup_flow(ui):
+    """The main startup logic running inside the TaskDialog thread."""
+    
+    # 1. Single Instance Check
+    ui.set_instruction("正在檢查執行環境...")
+    ui.log("正在檢查是否有重複執行...")
+    time.sleep(0.5)
+    
+    # We need to re-implement lock check here properly?
+    # Actually main() does it before showing dialog usually.
+    # But user wants to see "Starting..." so we can move it here or keep it before.
+    # If we keep it before, we might fail silently?
+    # Let's keep acquire_lock in main() because if it fails we just want to exit.
+    
+    # 2. Update Check
+    ui.set_instruction("正在檢查更新...")
+    ui.log(f"目前版本: {LAUNCHER_VERSION}")
+    
+    ensure_directories()
+    local_version = get_local_version()
+    remote_version, download_url = check_github_release()
+    
+    time.sleep(0.5) # UX delay
+    
+    if remote_version and compare_versions(local_version, remote_version):
+        ui.log(f"發現新版本: {remote_version}")
+        if download_url:
+            ui.set_instruction(f"正在下載更新 v{remote_version}")
+            ui.set_content("Downloading update...")
+            
+            # Switch to progress bar
+            ui.set_progress(0)
+            
+            # Define callback for downloader
+            def dl_callback(pct, msg):
+                ui.set_progress(pct)
+                # Parse msg to extract more info? msg is "下載中: 50%..."
+                # Log only important changes or always?
+                # Let's just update content area
+                ui.set_content(msg)
+            
+            terminate_main_app()
+            zip_path = os.path.join(DOWNLOAD_DIR, "update.zip")
+            
+            success = download_with_progress(download_url, zip_path, progress_callback=dl_callback)
+            
+            if success:
+                ui.set_instruction("正在安裝更新...")
+                ui.set_marquee(True) # Back to marquee for unzip
+                if apply_update(zip_path):
+                   ui.log("更新成功")
+                   save_local_version(remote_version)
+                   ui.set_instruction("更新完成！")
+                   ui.set_content("即將重啟...")
+                   time.sleep(1.5)
+                   # We should probably restart the process itself to load new code?
+                   # But if we just update server, we are fine. Launcher is updated?
+                   # Launcher updates itself. We CANNOT update running launcher easily.
+                   # Usually launcher updates Zbot_Server.
+                   # If we update Zbot_Server, we can just proceed.
+                   pass
+                else:
+                   ui.log("安裝更新失敗")
+                   ui.set_instruction("更新失敗")
+                   time.sleep(2)
+            else:
+                ui.log("下載失敗")
+                ui.set_instruction("下載失敗")
+                time.sleep(2)
+    else:
+        ui.log("已是最新版本")
+    
+    # 3. Start Server
+    ui.set_instruction("正在啟動系統...")
+    ui.set_content("初始化伺服器核心...")
+    ui.set_marquee(True) # Ensure marquee
+    
+    manager = ZbotManager()
+    ui.log("啟動 Zbot Server...")
+    
+    if not manager.start_server():
+        ui.log("伺服器啟動失敗！")
+        ui.set_instruction("啟動失敗")
+        ui.set_content("請檢查 Logs")
+        time.sleep(3)
+        return # Will close dialog
+        
+    # Store manager in a global/shared place so main thread can access it?
+    # Or start monitoring here?
+    # monitoring thread is inside manager.
+    manager.start_server_monitor()
+    
+    # Pass manager back to main thread via a hack or refactor?
+    # We can assign to global variable or return it?
+    # But this function executes, then dialog closes.
+    # main() waits for dialog to close.
+    # So we need to pass manager out.
+    global _manager_instance
+    _manager_instance = manager
+    
+    # 4. Open Browser
+    ui.set_content("正在開啟瀏覽器...")
+    ui.log("開啟控制台頁面...")
+    time.sleep(1.5) # Wait for server boot
+    manager.open_browser()
+    
+    ui.set_instruction("啟動完成")
+    ui.set_content("即將最小化至系統匣...")
+    ui.log("系統就緒")
+    time.sleep(1.5) # Show "Success" state briefly
+
+_manager_instance = None
+
 def main():
     # Check for single instance
     if not acquire_single_instance_lock():
-        print("[!] Zbot 已在運行中")
-        # Optional: Show message box? Usually not needed if it just quits silently or brings to front.
-        # But user might be confused if they click and nothing happens.
-        # show_error_messagebox("Zbot", "程式已在執行中")
+        show_error_messagebox("Zbot", "程式已在執行中")
         return
-    
-    # print_header() # Console hidden, no header needed
-    
-    # Phase 1: Console (Hidden) - Check for updates
-    if not check_and_update():
-        # If check failed and no local version, show error
-        if not os.path.exists(SERVER_EXE):
-             show_error_messagebox("Zbot", "無法連線更新且無本地版本，請檢查網路。")
-        return
-    
-    # Create manager
-    manager = ZbotManager()
-    
-    # Start server
-    print("[.] 正在啟動伺服器...")
-    if not manager.start_server():
-        print("[✗] 無法啟動伺服器")
-        show_error_messagebox("Zbot 錯誤", "無法啟動伺服器核心 (Zbot_Server.exe)")
-        return
-    
-    # Start server health monitor
-    manager.start_server_monitor()
-    
-    # Open browser
-    print("[.] 正在開啟瀏覽器...")
-    time.sleep(1.5)  # Wait for server to start
-    manager.open_browser()
-    
-    # print("[✓] 已開啟瀏覽器，最小化至系統匣") # No console
-    
-    # Phase 2: Hide console - REMOVED (NoConsole mode)
-    # hide_console()
-    
-    # Phase 3: Run with systray (silent)
-    manager.run_with_systray()
+        
+    # Show Startup Dialog
+    # This blocks until startup_flow finishes
+    try:
+        from ui_taskdialog import show_progress_dialog
+        show_progress_dialog("Zbot 啟動中", "正在初始化...", startup_flow)
+    except ImportError:
+        # Fallback if no UI available (e.g. debugging)
+        print("UI Import Failed - Running headless")
+        ui = type('DummyUI', (), {
+            'set_instruction': print, 'set_content': print, 'log': print, 
+            'set_progress': lambda x: None, 'set_marquee': lambda x: None,
+            'close': lambda: None
+        })()
+        startup_flow(ui)
+        
+    # Proceed to Systray loop if manager exists
+    if _manager_instance and _manager_instance.running:
+        _manager_instance.run_with_systray()
+    else:
+        # Startup failed or cancelled
+        pass
+
 
 
 if __name__ == "__main__":

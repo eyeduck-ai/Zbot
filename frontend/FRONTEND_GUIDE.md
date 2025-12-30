@@ -19,11 +19,12 @@ frontend/
 │   ├── context/       # React Context (AuthContext)
 │   ├── hooks/         # 自訂 Hooks
 │   ├── pages/         # 頁面元件
+│   │   └── ConfigSetupPage.tsx  # 環境設定頁 (可透過 /config 直接存取)
 │   ├── services/      # 服務層
 │   ├── styles/        # 共用樣式與主題常數
 │   │   └── theme.ts   # THEME 常數定義
 │   ├── config.ts      # 全域設定
-│   └── App.tsx        # 路由與佈局
+│   └── App.tsx        # 路由與佈局 (偵測 /config 路徑)
 ├── FRONTEND_GUIDE.md  # 本文檔
 └── package.json
 ```

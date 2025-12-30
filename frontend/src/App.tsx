@@ -213,6 +213,13 @@ function ProtectedApp() {
 }
 
 function App() {
+  // ★★★ 最優先：檢查 URL 是否有 openConfig 參數 ★★★
+  // Query parameter 比 pathname 更可靠
+  const [forceConfigPage] = useState(() => {
+    const params = new URLSearchParams(window.location.search);
+    return params.has('openConfig');
+  });
+
   // Config check state
   const [configStatus, setConfigStatus] = useState<{
     checked: boolean;
@@ -240,18 +247,30 @@ function App() {
     checkConfig();
   }, []);
 
-  // Loading state
+  // ★★★ 如果有 openConfig 參數，優先顯示設定頁 ★★★
+  if (forceConfigPage) {
+    return (
+      <ConfigSetupPage
+        configPath={configStatus.path || '載入中...'}
+        onComplete={() => {
+          // 移除 query param 並回到首頁
+          window.location.href = '/';
+        }}
+      />
+    );
+  }
+
+  // Loading state (only for non-config routes)
   if (!configStatus.checked) {
     return <LoadingScreen />;
   }
 
-  // Config setup required
+  // Config setup required when no config exists
   if (!configStatus.exists) {
     return (
       <ConfigSetupPage
         configPath={configStatus.path}
         onComplete={() => {
-          // Reload the page to reinitialize with new config
           window.location.reload();
         }}
       />
