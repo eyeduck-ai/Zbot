@@ -6,6 +6,7 @@ Zbot Launcher + Systray
 2. Launch Zbot_Server as subprocess
 3. Display system tray icon with menu
 4. Manage server lifecycle
+5. Monitor server health and auto-restart on crash
 
 Usage: Double-click Zbot.exe
 """
@@ -15,7 +16,7 @@ import time
 import subprocess
 import webbrowser
 import threading
-import shutil
+import ctypes
 
 from config import (
     LAUNCHER_VERSION, 
@@ -27,6 +28,8 @@ from config import (
     SERVER_URL,
     ZBOT_DIR,
     LEGACY_APP_DIR,
+    SERVER_HOST,
+    SERVER_PORT,
 )
 from updater import (
     ensure_directories,
@@ -40,14 +43,31 @@ from updater import (
 )
 
 
+# --- Single Instance Lock ---
+def acquire_single_instance_lock():
+    """Prevent multiple launcher instances using Windows Mutex.
+    
+    Returns True if lock acquired, False if another instance is running.
+    """
+    kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+    
+    # Create a named mutex
+    mutex = kernel32.CreateMutexW(None, False, "Global\\ZbotLauncherMutex")
+    last_error = ctypes.get_last_error()
+    
+    if last_error == 183:  # ERROR_ALREADY_EXISTS
+        return False
+    
+    return True
+
+
 def hide_console():
     """Hide the console window using Win32 API.
     
-    This is called after the update process completes to allow
+    This is called after the browser opens to allow
     the launcher to run silently in the system tray.
     """
     try:
-        import ctypes
         kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
         user32 = ctypes.WinDLL('user32', use_last_error=True)
         
@@ -60,13 +80,21 @@ def hide_console():
     return False
 
 
+def show_error_messagebox(title: str, message: str):
+    """Show a Windows MessageBox with an error icon."""
+    ctypes.windll.user32.MessageBoxW(0, message, title, 0x10)  # MB_ICONERROR
+
+
 class ZbotManager:
     """Manages Zbot Server lifecycle and system tray."""
+    
+    MAX_RESTART_ATTEMPTS = 3
     
     def __init__(self):
         self.server_process = None
         self.systray = None
         self.running = True
+        self.restart_count = 0
     
     def start_server(self) -> bool:
         """Start Zbot Server as subprocess."""
@@ -115,11 +143,16 @@ class ZbotManager:
         print("[.] 正在重啟伺服器...")
         self.stop_server()
         time.sleep(1)
+        self.restart_count = 0  # Reset restart count on manual restart
         self.start_server()
     
     def open_browser(self):
-        """Open browser to Zbot."""
+        """Open browser to Zbot main page."""
         webbrowser.open(SERVER_URL)
+    
+    def open_config_page(self):
+        """Open browser to Zbot config page."""
+        webbrowser.open(f"{SERVER_URL}/config")
     
     def on_quit(self, systray=None):
         """Quit handler for system tray."""
@@ -127,6 +160,50 @@ class ZbotManager:
         self.running = False
         self.stop_server()
         os._exit(0)
+    
+    def start_server_monitor(self):
+        """Start background thread to monitor server health.
+        
+        If server crashes (exit code != 0), automatically restart up to 3 times.
+        If server exits normally (exit code == 0), don't restart.
+        """
+        def monitor():
+            while self.running:
+                time.sleep(10)  # Check every 10 seconds
+                
+                if self.server_process:
+                    exit_code = self.server_process.poll()
+                    
+                    if exit_code is not None:
+                        # Server has exited
+                        if exit_code == 0:
+                            # Normal exit (idle timeout, API shutdown)
+                            print("[.] Server 正常退出")
+                            self.running = False
+                            if self.systray:
+                                try:
+                                    self.systray.shutdown()
+                                except:
+                                    pass
+                            os._exit(0)
+                        else:
+                            # Abnormal exit (crash)
+                            self.restart_count += 1
+                            if self.restart_count <= self.MAX_RESTART_ATTEMPTS:
+                                print(f"[!] Server 異常退出 (code {exit_code}), 重啟中... ({self.restart_count}/{self.MAX_RESTART_ATTEMPTS})")
+                                self.start_server()
+                            else:
+                                print(f"[✗] Server 連續 crash {self.MAX_RESTART_ATTEMPTS} 次，停止重啟")
+                                log_path = os.path.join(ZBOT_DIR, "logs")
+                                show_error_messagebox(
+                                    "Zbot 錯誤",
+                                    f"Zbot Server 無法啟動，請檢查 Log 檔案。\n\n路徑: {log_path}"
+                                )
+                                self.running = False
+                                os._exit(1)
+        
+        monitor_thread = threading.Thread(target=monitor, daemon=True)
+        monitor_thread.start()
     
     def run_with_systray(self):
         """Run with system tray icon."""
@@ -152,24 +229,26 @@ class ZbotManager:
             # Fallback to config ICON_PATH
             icon_path = ICON_PATH
         
-        # If no icon found, systray will use default
-        
         # Menu handlers
         def on_open_browser(systray):
             self.open_browser()
+        
+        def on_open_config(systray):
+            self.open_config_page()
         
         def on_restart(systray):
             self.restart_server()
         
         menu_options = (
             ("開啟 Zbot", None, on_open_browser),
-            ("重啟服務", None, on_restart),
+            ("開啟設定頁", None, on_open_config),
+            ("重啟伺服器", None, on_restart),
         )
         
         try:
             self.systray = SysTrayIcon(
                 icon_path,
-                "Zbot",
+                f"Zbot v{LAUNCHER_VERSION}",  # Tooltip shows version
                 menu_options,
                 on_quit=self.on_quit
             )
@@ -251,6 +330,12 @@ def check_and_update():
 
 
 def main():
+    # Check for single instance
+    if not acquire_single_instance_lock():
+        print("[!] Zbot 已在運行中")
+        time.sleep(2)
+        return
+    
     print_header()
     
     # Phase 1: Console visible - Check for updates
@@ -258,10 +343,7 @@ def main():
         input("按 Enter 鍵結束...")
         return
     
-    # Phase 2: Hide console after update completes
-    hide_console()
-    
-    # Phase 3: Run silently with systray
+    # Create manager
     manager = ZbotManager()
     
     # Start server
@@ -271,13 +353,21 @@ def main():
         input("按 Enter 鍵結束...")
         return
     
+    # Start server health monitor
+    manager.start_server_monitor()
+    
     # Open browser
     print("[.] 正在開啟瀏覽器...")
     time.sleep(1.5)  # Wait for server to start
     manager.open_browser()
     
-    # Run with systray (console now hidden)
     print("[✓] 已開啟瀏覽器，最小化至系統匣")
+    time.sleep(0.5)  # Let user see the message
+    
+    # Phase 2: Hide console AFTER browser opens
+    hide_console()
+    
+    # Phase 3: Run with systray (silent)
     manager.run_with_systray()
 
 
