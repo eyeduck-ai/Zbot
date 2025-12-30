@@ -16,7 +16,7 @@ repo_root = os.path.dirname(project_root)
 
 # Correct paths relative to repo root
 frontend_dist = os.path.join(repo_root, 'frontend', 'dist')
-assets_dir = os.path.join(repo_root, 'assets')
+launcher_assets = os.path.join(repo_root, 'zbot_launcher', 'assets')
 
 # Hidden imports for FastAPI/Uvicorn (NO systray here)
 hidden_imports = [
@@ -67,8 +67,8 @@ hidden_imports += collect_submodules('vghsdk')
 datas = [
     # Frontend dist
     (frontend_dist, 'frontend/dist'),
-    # Assets (Icon)
-    (assets_dir, 'assets'),
+    # Assets (Icon) - from launcher assets
+    (launcher_assets, 'assets'),
 ]
 
 # Explicitly bundle local packages
@@ -119,7 +119,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=os.path.join(assets_dir, 'logo.ico'),
+    icon=os.path.join(launcher_assets, 'icon.ico'),
 )
 
 coll = COLLECT(
