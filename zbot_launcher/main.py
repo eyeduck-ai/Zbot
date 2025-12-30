@@ -40,6 +40,26 @@ from updater import (
 )
 
 
+def hide_console():
+    """Hide the console window using Win32 API.
+    
+    This is called after the update process completes to allow
+    the launcher to run silently in the system tray.
+    """
+    try:
+        import ctypes
+        kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+        user32 = ctypes.WinDLL('user32', use_last_error=True)
+        
+        hwnd = kernel32.GetConsoleWindow()
+        if hwnd:
+            user32.ShowWindow(hwnd, 0)  # SW_HIDE = 0
+            return True
+    except Exception:
+        pass
+    return False
+
+
 class ZbotManager:
     """Manages Zbot Server lifecycle and system tray."""
     
@@ -233,12 +253,15 @@ def check_and_update():
 def main():
     print_header()
     
-    # Check for updates
+    # Phase 1: Console visible - Check for updates
     if not check_and_update():
         input("按 Enter 鍵結束...")
         return
     
-    # Create manager
+    # Phase 2: Hide console after update completes
+    hide_console()
+    
+    # Phase 3: Run silently with systray
     manager = ZbotManager()
     
     # Start server
@@ -253,7 +276,7 @@ def main():
     time.sleep(1.5)  # Wait for server to start
     manager.open_browser()
     
-    # Run with systray
+    # Run with systray (console now hidden)
     print("[✓] 已開啟瀏覽器，最小化至系統匣")
     manager.run_with_systray()
 
