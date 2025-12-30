@@ -253,9 +253,8 @@ def create_github_release(version: str, zip_path: Path):
     print(f"\n🚀 Creating GitHub release v{version}...")
     
     # Check if gh CLI is available
-    result = subprocess.run(["gh", "--version"], capture_output=True)
-    if result.returncode != 0:
-        print("  ⚠️  GitHub CLI (gh) not installed")
+    if not shutil.which("gh"):
+        print("  ⚠️  GitHub CLI (gh) not installed or not found")
         print("  ℹ️  Install: https://cli.github.com/")
         print(f"  ℹ️  Manual upload: {zip_path}")
         return
@@ -279,12 +278,8 @@ def upload_to_gdrive(zip_path: Path) -> str | None:
     print(f"\n☁️  Uploading to Google Drive...")
     
     # Check if rclone is available
-    try:
-        result = subprocess.run(["rclone", "--version"], capture_output=True)
-        if result.returncode != 0:
-            raise FileNotFoundError("rclone not found")
-    except FileNotFoundError:
-        print("  ⚠️  Google Drive upload skipped (rclone not installed)")
+    if not shutil.which("rclone"):
+        print("  ⚠️  Google Drive upload skipped (rclone not installed or not found)")
         print(f"  ℹ️  Manually upload: {zip_path}")
         return None
     
@@ -314,9 +309,8 @@ def upload_launcher_release():
         return False
     
     # Check if gh CLI is available
-    result = subprocess.run(["gh", "--version"], capture_output=True)
-    if result.returncode != 0:
-        print("  ❌ GitHub CLI (gh) not installed")
+    if not shutil.which("gh"):
+        print("  ❌ GitHub CLI (gh) not installed or not found")
         print("  ℹ️  Install: https://cli.github.com/")
         return False
     

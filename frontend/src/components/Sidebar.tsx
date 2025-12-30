@@ -167,7 +167,10 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTool, onToolSelect, coll
         }
         const allowedPrefixes = getAllowedPrefixes(role);
         if (allowedPrefixes.includes('*')) return true;
-        return allowedPrefixes.some((p: string) => prefix.startsWith(p) || p.startsWith(prefix));
+        // 修正邏輯：權限 (p) 必須是功能 (prefix) 的前綴
+        // 例如：擁有 note_ 可進入 note_ivi_ (true)
+        // 但擁有 note_ivi_ 不可進入 note_ (false)
+        return allowedPrefixes.some((p: string) => prefix.startsWith(p));
     };
 
     // 收合模式的寬度與樣式
