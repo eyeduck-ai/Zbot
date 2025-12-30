@@ -41,14 +41,14 @@ def get_supabase_client(use_user_jwt: bool = True) -> Client:
     
     Args:
         use_user_jwt: 是否使用用戶 JWT（預設 True，用於 RLS）
-                      設為 False 時只使用 publishable key
+                      設為 False 時只使用 API key
     
     Returns:
         Supabase Client
         
     RLS 注意事項：
-    - publishable key: 用於 apikey header
-    - 用戶 JWT: 用於 Authorization header，讓 RLS 能識別用戶
+    - apikey header: 始終使用 Supabase API key
+    - Authorization header: 使用用戶 JWT（如果有的話），讓 RLS 能識別用戶
     """
     settings = get_settings()
     
@@ -59,15 +59,12 @@ def get_supabase_client(use_user_jwt: bool = True) -> Client:
     if use_user_jwt:
         user_jwt = _current_user_jwt.get()
         if user_jwt:
-            # 建立帶用戶 JWT 的 client
-            # Supabase SDK 會用這個 key 作為 Authorization header
-            client = create_client(settings.SUPABASE_URL, user_jwt)
+            # 建立 client 時使用 API key（不是用戶 JWT！）
+            client = create_client(settings.SUPABASE_URL, settings.SUPABASE_KEY)
             
-            # 確保 apikey header 仍然是 publishable key
-            # Supabase SDK 預設會用傳入的 key 同時設定 apikey 和 Authorization
-            # 這裡我們需要覆蓋 apikey
+            # 設定用戶 JWT 到 Authorization header（用於 RLS）
             if hasattr(client, 'postgrest') and hasattr(client.postgrest, 'session'):
-                client.postgrest.session.headers['apikey'] = settings.SUPABASE_KEY
+                client.postgrest.session.headers['Authorization'] = f'Bearer {user_jwt}'
             
             return client
     
