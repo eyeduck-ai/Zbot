@@ -2,7 +2,7 @@
 
 本文件說明如何在 Windows 上打包 Zbot 並發布到 GitHub Releases / Google Drive。
 
-> 📖 **相關文檔**：[README](README.md) | [DEVELOPMENT_GUIDE](DEVELOPMENT_GUIDE.md) | [BACKEND_GUIDE](backend/BACKEND_GUIDE.md) | [FRONTEND_GUIDE](frontend/FRONTEND_GUIDE.md)
+> 📖 **相關文檔**：[README](README.md) | [DEVELOPMENT_GUIDE](DEVELOPMENT_GUIDE.md) | [BACKEND_GUIDE](backend/BACKEND_GUIDE.md) | [FRONTEND_GUIDE](frontend/FRONTEND_GUIDE.md) | [LAUNCHER_GUIDE](zbot_launcher/LAUNCHER_GUIDE.md)
 
 > ⚠️ **注意**：打包流程需在 **Windows** 環境下執行。開發可在 Mac/Windows 進行。
 

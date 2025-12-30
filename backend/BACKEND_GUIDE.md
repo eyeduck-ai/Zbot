@@ -2,7 +2,7 @@
 
 > 🤖 **AI 開發者注意**：本文檔設計用於讓 AI 模型快速理解後端架構，產生一致品質的程式碼。
 
-> 📖 **相關文檔**：[README](../README.md) | [DEVELOPMENT_GUIDE](../DEVELOPMENT_GUIDE.md) | [FRONTEND_GUIDE](../frontend/FRONTEND_GUIDE.md) | [RELEASE_GUIDE](../RELEASE_GUIDE.md)
+> 📖 **相關文檔**：[README](../README.md) | [DEVELOPMENT_GUIDE](../DEVELOPMENT_GUIDE.md) | [FRONTEND_GUIDE](../frontend/FRONTEND_GUIDE.md) | [LAUNCHER_GUIDE](../zbot_launcher/LAUNCHER_GUIDE.md) | [RELEASE_GUIDE](../RELEASE_GUIDE.md)
 
 ## 目錄
 
