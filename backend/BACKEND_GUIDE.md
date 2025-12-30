@@ -2,7 +2,7 @@
 
 > 🤖 **AI 開發者注意**：本文檔設計用於讓 AI 模型快速理解後端架構，產生一致品質的程式碼。
 
-> 📖 **相關文檔**：[README](../README.md) | [DEVELOPMENT_GUIDE](../DEVELOPMENT_GUIDE.md) | [FRONTEND_GUIDE](../frontend/FRONTEND_GUIDE.md) | [LAUNCHER_GUIDE](../zbot_launcher/LAUNCHER_GUIDE.md) | [RELEASE_GUIDE](../RELEASE_GUIDE.md)
+> 📖 **相關文檔**：[README](../README.md) | [FRONTEND_GUIDE](../frontend/FRONTEND_GUIDE.md) | [LAUNCHER_GUIDE](../zbot_launcher/LAUNCHER_GUIDE.md) | [RELEASE_GUIDE](../RELEASE_GUIDE.md)
 
 ## 目錄
 
@@ -483,6 +483,46 @@ flowchart LR
 | ✅ 可被多處使用 | ✅ 需要業務邏輯處理 |
 | ✅ 不涉及 GSheet/Web9 | ✅ 需要與外部系統互動 |
 
+### Q: 如何取得 EIP Session?
+
+```python
+async def run(self, params: dict, client: VghClient, ...):
+    session = client.session  # VghSession 物件
+    
+    # 發送請求
+    resp = await session.get("https://...")
+    resp = await session.post("https://...", data={...})
+```
+
+### Q: 如何讀取/寫入 Google Sheets?
+
+```python
+from app.core.config import get_settings
+import pygsheets
+
+# 使用 pygsheets (認證透過 service account)
+settings = get_settings()
+gc = pygsheets.authorize(service_file="path/to/creds.json")
+sh = gc.open_by_key(sheet_id)
+worksheet = sh.worksheet("Sheet1")
+
+# 讀取資料
+data = worksheet.get_all_values()
+
+# 寫入資料
+worksheet.update_values("A1", [["Value1", "Value2"]])
+```
+
+### Q: 如何從 Supabase 讀取設定?
+
+```python
+from app.supabase.client import get_supabase_client
+
+client = get_supabase_client()
+result = client.table("settings").select("*").eq("key", "my_key").execute()
+settings = result.data[0] if result.data else None
+```
+
 ### Q: 參數報錯 "argument after ** must be a mapping"
 
 這是因為 params 已經是 Pydantic model，不需要再解構：
@@ -499,3 +539,4 @@ p = params
 
 1. 確認檔案底部有 `TaskRegistry.register(MyTask())`
 2. 確認 `app/core/loader.py` 有 import 該模組
+

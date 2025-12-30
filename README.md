@@ -88,9 +88,8 @@ npm run dev
 
 | 文檔 | 說明 |
 |------|------|
-| [DEVELOPMENT_GUIDE.md](DEVELOPMENT_GUIDE.md) | 開發手冊 — 專案架構、新增 Task、新增頁面 |
-| [backend/BACKEND_GUIDE.md](backend/BACKEND_GUIDE.md) | 後端指南 — 核心模組、資料庫、API 設計 |
-| [frontend/FRONTEND_GUIDE.md](frontend/FRONTEND_GUIDE.md) | 前端指南 — 元件庫、樣式規範、API 呼叫模式 |
+| [backend/BACKEND_GUIDE.md](backend/BACKEND_GUIDE.md) | 後端指南 — 核心模組、資料庫、API 設計、Task 開發 |
+| [frontend/FRONTEND_GUIDE.md](frontend/FRONTEND_GUIDE.md) | 前端指南 — 元件庫、樣式規範、頁面開發 |
 | [zbot_launcher/LAUNCHER_GUIDE.md](zbot_launcher/LAUNCHER_GUIDE.md) | Launcher 指南 — 自動更新、Systray、進程管理 |
 | [RELEASE_GUIDE.md](RELEASE_GUIDE.md) | 發布指南 — Windows 打包與部署流程 |
 

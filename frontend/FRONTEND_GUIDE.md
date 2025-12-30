@@ -2,7 +2,7 @@
 
 > 🤖 **AI 開發者注意**：本文檔設計用於讓 AI 模型快速理解專案規範，產生一致品質的程式碼。
 
-> 📖 **相關文檔**：[README](../README.md) | [DEVELOPMENT_GUIDE](../DEVELOPMENT_GUIDE.md) | [BACKEND_GUIDE](../backend/BACKEND_GUIDE.md) | [RELEASE_GUIDE](../RELEASE_GUIDE.md)
+> 📖 **相關文檔**：[README](../README.md) | [BACKEND_GUIDE](../backend/BACKEND_GUIDE.md) | [LAUNCHER_GUIDE](../zbot_launcher/LAUNCHER_GUIDE.md) | [RELEASE_GUIDE](../RELEASE_GUIDE.md)
 
 ---
 
@@ -568,6 +568,65 @@ await apiClient.delete('/api/endpoint');
 ## 範例頁面
 
 參考 `frontend/src/pages/_TemplatePage.tsx` 作為新頁面的起點。
+
+---
+
+## 建立新頁面
+
+### Step 1: 建立頁面元件
+
+```tsx
+// frontend/src/pages/MyNewPage.tsx
+import React, { useState, useCallback } from 'react';
+import { Card } from '../components/ui/Card';
+import { Button } from '../components/ui/Button';
+import { tasksApi } from '../api/tasks';
+
+export const MyNewPage: React.FC = () => {
+    const [loading, setLoading] = useState(false);
+    const [statusMsg, setStatusMsg] = useState<string | null>(null);
+    
+    const handleRun = useCallback(async () => {
+        setLoading(true);
+        // ... 任務邏輯
+    }, []);
+    
+    return (
+        <div className="bg-[#F5F5F7] min-h-full flex flex-col p-4 font-sans">
+            <div className="relative z-10 w-full max-w-5xl mx-auto my-auto">
+                <Card style={{ padding: '24px' }}>
+                    <Button onClick={handleRun} disabled={loading}>
+                        {loading ? '執行中...' : '執行任務'}
+                    </Button>
+                    {statusMsg && <p>{statusMsg}</p>}
+                </Card>
+            </div>
+        </div>
+    );
+};
+```
+
+### Step 2: 加入路由
+
+```tsx
+// frontend/src/App.tsx
+import { MyNewPage } from './pages/MyNewPage';
+
+// 在 Routes 中加入
+<Route path="/my-new-page" element={<MyNewPage />} />
+```
+
+### Step 3: 加入 Sidebar
+
+```tsx
+// frontend/src/components/Sidebar.tsx
+import { YourIcon } from 'lucide-react';
+
+// 在 NAV_ITEMS 中加入
+{ icon: YourIcon, label: '新功能', path: '/my-new-page', prefix: 'my_new' }
+```
+
+> **prefix** 用於任務統計徽章顯示，應對應到後端 task_id 的前綴
 
 ---
 
