@@ -87,3 +87,72 @@ def to_iso_string(roc_str: str) -> Optional[str]:
     """
     d = to_western_date(roc_str)
     return d.strftime("%Y-%m-%d") if d else None
+
+
+def normalize_date(date_input: Union[str, datetime, date]) -> Optional[date]:
+    """
+    統一日期格式轉換，輸出 date 物件。
+    
+    支援格式:
+    - 'YYYY-MM-DD' (ISO, 推薦)
+    - 'YYYYMMDD' (西元 8 位)
+    - '1141220' (民國 7 位)
+    - '01141220' (民國 8 位)
+    - datetime/date 物件
+    
+    Returns:
+        date 物件，無效則回傳 None
+    """
+    if not date_input:
+        return None
+    
+    if isinstance(date_input, date) and not isinstance(date_input, datetime):
+        return date_input
+    
+    if isinstance(date_input, datetime):
+        return date_input.date()
+    
+    s = str(date_input).strip()
+    
+    # ISO 格式 YYYY-MM-DD
+    if "-" in s and len(s) == 10:
+        try:
+            return datetime.strptime(s, "%Y-%m-%d").date()
+        except ValueError:
+            pass
+    
+    # 純數字處理
+    digits = ''.join(filter(str.isdigit, s))
+    
+    # 西元 8 位 YYYYMMDD (年份 > 1911)
+    if len(digits) == 8 and int(digits[:4]) > 1911:
+        try:
+            return date(int(digits[:4]), int(digits[4:6]), int(digits[6:]))
+        except ValueError:
+            pass
+    
+    # 民國格式 (6/7/8 位)
+    return to_western_date(s)
+
+
+def to_roc_date_8(date_input: Union[str, datetime, date]) -> Optional[str]:
+    """
+    轉換日期為 8 位民國格式 (如 '01141220')。
+    
+    與 to_roc_date 的差異: 前面補 0 成為 8 位數。
+    """
+    d = normalize_date(date_input)
+    if not d:
+        return None
+    
+    roc_year = d.year - 1911
+    return f"0{roc_year}{d.month:02d}{d.day:02d}"
+
+
+def to_yyyymmdd(date_input: Union[str, datetime, date]) -> Optional[str]:
+    """轉換日期為西元 YYYYMMDD 格式。"""
+    d = normalize_date(date_input)
+    if not d:
+        return None
+    return d.strftime("%Y%m%d")
+

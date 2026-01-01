@@ -118,10 +118,19 @@ Zbot/
 │   ├── zbot_server.spec      # PyInstaller spec
 │   ├── app/
 │   │   ├── routers/         # API 端點
-│   │   ├── tasks/           # 業務任務
+│   │   ├── tasks/           # 組合型任務 (class-based)
 │   │   ├── core/            # JobManager, TaskRegistry
 │   │   └── db/              # Supabase 連接
-│   └── vghsdk/              # 底層爬蟲庫
+│   └── vghsdk/              # 底層爬蟲庫 (function-based)
+│       ├── core.py          # VghClient, TaskResult, @crawler_task
+│       ├── utils.py         # 日期轉換工具
+│       ├── helpers.py       # HTML 解析工具
+│       └── modules/         # 27 個 function-based tasks
+│           ├── patient.py   # 15 tasks
+│           ├── doctor.py    # 4 tasks
+│           ├── surgery.py   # 3 tasks
+│           ├── consent.py   # 4 tasks
+│           └── ivi.py       # 1 task
 ├── frontend/                 # React + Vite 前端
 │   └── src/
 │       ├── pages/           # 頁面元件

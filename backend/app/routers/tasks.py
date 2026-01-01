@@ -75,8 +75,6 @@ async def run_crawler_job(job_id: str, task_id: str, params: Dict[str, Any], eip
              return
              
         # Parse params into the specific Pydantic model for the task
-        # Router validates and converts dict -> Pydantic model
-        # Task.run() receives the validated model directly
         if task.params_model:
             try:
                 task_params = task.params_model(**params) if params else task.params_model()
@@ -87,21 +85,34 @@ async def run_crawler_job(job_id: str, task_id: str, params: Dict[str, Any], eip
             task_params = params if params else {}
 
         # Define Progress Callback with job_id closure
-        # Tasks can call progress_callback.get_job_id() to check cancellation
         async def progress_callback(progress: int, message: str = None):
             JobManager.update_job(job_id, progress=progress)
             if message:
                 logger.debug(f"Job {job_id} progress {progress}%: {message}")
         
-        # Attach job_id to progress_callback for cancellation checking
         progress_callback.job_id = job_id
 
-        # Execute task
+        # Execute task - 支援 function-based 和 class-based
+        is_func_based = TaskRegistry.is_function_based(task_id)
+        
         try:
-             result = await task.run(task_params, client, progress_callback=progress_callback)
-        except TypeError as te:
-             logger.warning(f"Task {task.id} might not support progress_callback: {te}")
-             result = await task.run(task_params, client)
+            if is_func_based:
+                # Function-based: 直接呼叫 (不支援 progress_callback)
+                result = await task(task_params, client)
+            else:
+                # Class-based: 呼叫 .run() 方法
+                try:
+                    result = await task.run(task_params, client, progress_callback=progress_callback)
+                except TypeError:
+                    result = await task.run(task_params, client)
+        except Exception as exec_err:
+            logger.error(f"Task execution error: {exec_err}")
+            raise
+        
+        # 標準化為 dict (相容 TaskResult 和舊版回傳)
+        from vghsdk.core import TaskResult
+        if isinstance(result, TaskResult):
+            result = result.model_dump()
         
         # 檢查 result 是否為取消狀態
         result_status = getattr(result, 'status', None) if hasattr(result, 'status') else (result.get('status') if isinstance(result, dict) else None)

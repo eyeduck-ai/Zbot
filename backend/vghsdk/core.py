@@ -43,9 +43,46 @@ class CrawlerConfig:
 CRAWLER_CONFIG = CrawlerConfig()
 
 
-# --- 1. Models & Interfaces (Formerly base.py) ---
+# --- 1. Models & Interfaces ---
 
 
+class TaskResult(BaseModel):
+    """統一的回傳格式。"""
+    success: bool = True
+    data: Any = None
+    message: str = ""
+    count: int = 0
+    
+    @classmethod
+    def ok(cls, data: Any, message: str = "") -> "TaskResult":
+        count = len(data) if isinstance(data, list) else (1 if data else 0)
+        return cls(success=True, data=data, message=message, count=count)
+    
+    @classmethod
+    def fail(cls, message: str) -> "TaskResult":
+        return cls(success=False, data=None, message=message, count=0)
+
+
+def crawler_task(id: str, name: str, description: str = "", params_model: Type[BaseModel] = None):
+    """
+    裝飾器：將 async function 註冊為 crawler task。
+    
+    使用方式:
+        @crawler_task(id="consent_search", name="Search Consent")
+        async def consent_search(params, client: VghClient) -> TaskResult:
+            ...
+    """
+    def decorator(func: Callable[..., Awaitable[TaskResult]]) -> Callable:
+        func.id = id
+        func.name = name
+        func.description = description
+        func.params_model = params_model
+        func.is_crawler_task = True
+        return func
+    return decorator
+
+
+# Legacy: CrawlerTask ABC (保留向後相容，逐步淘汰)
 class CrawlerTask(ABC):
     """
     Abstract Base Class for all crawler tasks in vghsdk.
@@ -175,21 +212,19 @@ class VghClient:
     # --- Private Auth Implementation ---
 
     async def _login_eip(self) -> bool:
+        """EIP 登入，處理多重 JavaScript 重導向 (採用 MCP 版本邏輯)。"""
         if not self.eip_id or not self.eip_psw:
             logger.error("EIP ID or Password missing")
             return False
 
         base_url = 'https://eip.vghtpe.gov.tw'
         
-        # 1. Access login page to initialize session/cookies
         try:
             await self.session.get(f"{base_url}/login.php")
         except Exception as e:
             logger.error(f"Failed to access login page: {e}")
             return False
 
-        # 2. Post credentials
-        login_url = f"{base_url}/login_action.php"
         data = {
             'loginCheck': '0',
             'login_name': self.eip_id,
@@ -198,38 +233,50 @@ class VghClient:
         }
 
         try:
-            resp = await self.session.post(login_url, data=data)
+            resp = await self.session.post(f"{base_url}/login_action.php", data=data)
         except Exception as e:
             logger.error(f"Failed to post login: {e}")
             return False
 
         content = resp.text
         
-        # Check specific failure alerts
         if "帳號或密碼錯誤" in content:
             logger.warning("Login failed: Invalid credentials.")
             return False
         if "此帳戶已被停用" in content:
             logger.warning("Login failed: Account disabled.")
             return False
-        if "Login failed" in content:
-            logger.warning("Login failed: Generic error.")
-            return False
 
-        # Check for successful redirect
-        match = re.search(r'window\.location(\.href)?\s*=\s*["\'](.*?)["\']', content)
-        if match:
-            redirect_url = match.group(2)
-            if "login.php" in redirect_url:
-                logger.warning(f"Login failed: Redirected back to login page ({redirect_url}).")
-                return False
+        # 追蹤 JavaScript 重導向鏈 (最多 5 次)
+        for i in range(5):
+            match = re.search(r'window\.location(\.href)?\s*=\s*["\']([^"\']+)["\']', content)
+            if not match:
+                break
                 
-            logger.info(f"Login success. Redirect: {redirect_url}")
-            await self.session.get(f"{base_url}{redirect_url}")
-            return True
+            redirect_url = match.group(2)
             
-        logger.error(f"Unknown login response format.")
-        return False
+            if "login.php" in redirect_url and "token" not in redirect_url:
+                logger.warning(f"Login failed: Redirected to login page.")
+                return False
+            
+            if redirect_url.startswith('/'):
+                full_url = f"{base_url}{redirect_url}"
+            elif redirect_url.startswith('http'):
+                full_url = redirect_url
+            else:
+                full_url = f"{base_url}/{redirect_url}"
+                
+            logger.debug(f"Following redirect {i+1}: {full_url}")
+            
+            try:
+                resp = await self.session.get(full_url)
+                content = resp.text
+            except Exception as e:
+                logger.error(f"Failed to follow redirect: {e}")
+                return False
+        
+        logger.info(f"EIP login successful for {self.eip_id}")
+        return True
 
     async def _init_drweb(self) -> bool:
         url = "https://web9.vghtpe.gov.tw/emr/qemr/qemr.cfm?action=findPatient&srnId=DRWEBAPP&seqno=009"

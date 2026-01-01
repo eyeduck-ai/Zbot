@@ -38,7 +38,7 @@ from app.config import get_settings
 from app.core.jobs import JobManager  # 用於檢查取消狀態
 from app.core.registry import TaskRegistry
 from vghsdk.modules.doctor import get_doctor_name
-from vghsdk.modules.surgery import SurgeryDetailTask, SurgeryDetailParams
+from vghsdk.modules.surgery import surgery_detail, SurgeryDetailParams
 from app.tasks.opnote.record_cache import (
     SurgeryRecord, 
     BASE_EDITABLE_FIELDS,
@@ -53,8 +53,8 @@ logger = logging.getLogger("surgery_tasks")
 _payload_builder = PayloadBuilder()
 _config_service = get_opnote_config_service()
 
-# SDK Task 實例 (重複使用)
-_surgery_detail_task = SurgeryDetailTask()
+# SDK Task 函式 (重複使用)
+# 注意: 現在是 function-based，直接呼叫 surgery_detail(params, client)
 
 
 # =============================================================================
@@ -551,7 +551,8 @@ class SurgeryFetchDetailsTask(BaseTask):
                 # 1. 使用 SDK 抓取排程詳情 (取得完整醫師資訊)
                 if link:
                     sdk_params = SurgeryDetailParams(link_url=link)
-                    detail_data = await _surgery_detail_task.run(sdk_params, client)
+                    detail_data_result = await surgery_detail(sdk_params, client)
+                    detail_data = detail_data_result.data if detail_data_result.success else None
                     
                     # Debug log
                     logger.debug(f"[SDK Detail] hisno={hisno}, link={link}")

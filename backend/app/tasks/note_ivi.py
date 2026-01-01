@@ -5,7 +5,7 @@ import asyncio
 from pydantic import BaseModel
 from vghsdk.core import VghClient, VghSession
 from app.tasks.base import BaseTask
-from vghsdk.modules.ivi import IviFetchTask
+from vghsdk.modules.ivi import ivi_fetch  # Function-based task
 from vghsdk.utils import to_roc_date
 from app.tasks.opnote import OpNoteBaseTask, PayloadBuilder, IviPayloadFields
 from app.core.registry import TaskRegistry
@@ -181,4 +181,5 @@ class IviBatchSubmitTask(OpNoteBaseTask):
 
 # Auto Register
 TaskRegistry.register(IviBatchSubmitTask())
-TaskRegistry.register(IviFetchTask())
+# Note: IviFetchTask (now ivi_fetch) is registered in loader.py
+

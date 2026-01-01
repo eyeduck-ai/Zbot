@@ -1,673 +1,613 @@
+"""Patient 模組 - 病人相關查詢 (Function-based)。
 
-from typing import Any, Optional, List, Dict
-from pydantic import BaseModel, Field
-from bs4 import BeautifulSoup
-from vghsdk.core import CrawlerTask, VghClient
+以 MCP 版本 (已驗證) 為主要邏輯來源。
+"""
 import logging
+import re
+from typing import Optional
+from bs4 import BeautifulSoup
+from pydantic import BaseModel, Field
+
+from vghsdk.core import VghClient, TaskResult, crawler_task
+from vghsdk.utils import normalize_date, to_roc_date_8, to_iso_string, to_yyyymmdd
+from vghsdk.helpers import parse_table
 
 logger = logging.getLogger(__name__)
 
+
+# --- Params ---
+
 class PatientSearchParams(BaseModel):
-    hisno: Optional[str] = Field(default="", description="Hospital Number (病歷號)")
-    pidno: Optional[str] = Field(default="", description="Patient ID (身分證號)")
-    name: Optional[str] = Field(default="", description="Patient Name (姓名)")
-    ward: Optional[str] = Field(default="0", description="Ward (病房號)")
-    
-class PatientSearchTask(CrawlerTask):
-    """
-    用病歷號/身分證號/姓名搜尋病人。
-    
-    Args:
-        hisno: 病歷號
-        pidno: 身分證號
-        name: 姓名
-        ward: 病房號；預設 "0"
-    
-    Returns:
-        List[Dict] 包含欄位:
-        - 功能: str
-        - 病房床號: str
-        - 病歷號: str
-        - 姓名: str
-        - 性別: str ("男"/"女")
-        - 出生日: str (e.g. "19940216(31歲)")
-    """
-    id = "patient_search"
-    name = "Patient Search"
-    description = "搜尋病人 - 用病歷號/身分證號/姓名查詢"
-    params_model = PatientSearchParams
+    hisno: Optional[str] = Field(None, description="病歷號")
+    pidno: Optional[str] = Field(None, description="身分證號")
+    name: Optional[str] = Field(None, description="姓名")
+    ward: str = Field(default="0", description="病房號")
 
-    async def run(self, params: PatientSearchParams, client: VghClient) -> List[Dict[str, str]]:
-        if not await client.ensure_eip(): return []
-        session = client.session
-        url = 'https://web9.vghtpe.gov.tw/emr/qemr/qemr.cfm?action=findPatient'
-        
-        # Mapped from old vghbot_crawler.py
-        payload = {
-            'wd': params.ward,
-            'histno': params.hisno,
-            'pidno': params.pidno,
-            'namec': params.name,
-            'drid': '', # Optional doc ID, left empty as per old code defaults
-            'er': '0',
-            'bilqrta': '0',
-            'bilqrtdt': '',
-            'bildurdt': '0',
-            'other': '0',
-            'nametype': ''
-        }
-        
-        logger.info(f"Executing Patient Search with: {payload}")
-        
-        # We assume the session is already logged in by the runner
-        resp = await session.post(url, data=payload)
-        
-        if '電子病歷查詢系統操作發生異常' in resp.text:
-             logger.warning("VGH System specific error message detected.")
-             return []
-
-        # Parse HTML table
-        # Old code used pd.read_html(..., attrs={'id':'patlist'})
-        # We use BeautifulSoup for lightweight dependency
-        soup = BeautifulSoup(resp.text, 'lxml')
-        table = soup.find('table', id='patlist')
-        
-        results = []
-        if not table:
-            logger.info("No patient list table found.")
-            return results
-            
-        # Parse headers
-        headers = []
-        thead = table.find('thead')
-        if thead:
-            headers = [th.get_text(strip=True) for th in thead.find_all('th')]
-        else:
-            # Fallback if no thead, check first row
-            rows = table.find_all('tr')
-            if rows:
-                 headers = [td.get_text(strip=True) for td in rows[0].find_all(['td', 'th'])]
-
-        # Parse rows
-        tbody = table.find('tbody')
-        rows = tbody.find_all('tr') if tbody else table.find_all('tr')[1:] # Skip header if no tbody
-        
-        for row in rows:
-            cols = row.find_all('td')
-            if not cols: 
-                continue
-            
-            # Map columns to headers
-            record = {}
-            for i, col in enumerate(cols):
-                if i < len(headers):
-                    record[headers[i]] = col.get_text(strip=True)
-            results.append(record)
-            
-        return results
-
-# Register
-# Register
-
-async def select_patient(session, hisno: str) -> bool:
-    """
-    Select a patient session-side before accessing their data.
-    """
-    check_url = "https://web9.vghtpe.gov.tw/emr/qemr/qemr.cfm"
-    check_payload = {
-        'action': 'findEmr',
-        'histno': str(hisno)
-    }
-    # We should use GET here as per old code
-    resp = await session.get(check_url, params=check_payload)
-    if '電子病歷查詢系統操作發生異常' in resp.text:
-        return False
-    return True
+class PatientHisnoParams(BaseModel):
+    hisno: str = Field(..., description="病歷號")
 
 class PatientOpdListParams(BaseModel):
-    hisno: str = Field(..., description="Hospital Number (病歷號)")
-    old_than_four_years: bool = Field(default=True, description="Include records older than 4 years")
-
-class PatientOpdListTask(CrawlerTask):
-    """
-    取得病人門診就診紀錄清單。
-    
-    Args:
-        hisno: 病歷號
-        old_than_four_years: 是否包含 4 年前紀錄；預設 True
-    
-    Returns:
-        List[Dict] 包含欄位:
-        - 門診日期: str (e.g. "2025-06-05")
-        - 門診時間: str (e.g. "08:26:42")
-        - 門診醫師: str - 含醫師燈號 (e.g. "鄭明軒 (DOC4123J)")
-        - 科別: str - 含科別名稱 (e.g. "0PH(眼科特別門診)")
-        - 門診主診斷碼: str - ICD 碼以逗號分隔
-    """
-    id = "patient_opd_list"
-    name = "Outpatient Visit List"
-    description = "門診紀錄清單 - 取得病人就診歷史"
-    params_model = PatientOpdListParams
-    
-    # ... (Run method unchanged) ...
-    async def run(self, params: PatientOpdListParams, client: VghClient) -> List[Dict[str, str]]:
-        if not await client.ensure_eip(): return []
-        session = client.session
-        # 1. Select Patient
-        if not await select_patient(session, params.hisno):
-            logger.warning(f"Patient {params.hisno} not found or selection failed.")
-            return []
-
-        url = 'https://web9.vghtpe.gov.tw/emr/qemr/qemr.cfm'
-        results = []
-
-        # 2. Fetch Recent Records (findOpd)
-        payload = {
-            'action': 'findOpd',
-            'histno': str(params.hisno),
-            '_': 0 
-        }
-        await self._fetch_and_parse(session, url, payload, results)
-
-        # 3. Fetch Older Records if requested (findOpd01)
-        if params.old_than_four_years:
-            payload_old = {
-                'action': 'findOpd01',
-                'histno': str(params.hisno),
-                '_': 0
-            }
-            await self._fetch_and_parse(session, url, payload_old, results)
-            
-        return results
-
-    async def _fetch_and_parse(self, session, url: str, payload: dict, results: list):
-        try:
-            resp = await session.get(url, params=payload)
-            if '無門診' in resp.text:
-                return
-
-            soup = BeautifulSoup(resp.text, 'lxml')
-            table_id = 'opdlist' if payload['action'] == 'findOpd' else 'opdlist01'
-            table = soup.find('table', id=table_id)
-            
-            if not table: return
-
-            headers = []
-            rows = table.find_all('tr')
-            if not rows: return
-                
-            headers = [th.get_text(strip=True) for th in rows[0].find_all(['th', 'td'])]
-            
-            for row in rows[1:]:
-                cols = row.find_all('td')
-                if not cols: continue
-                record = {}
-                for i, col in enumerate(cols):
-                    if i < len(headers):
-                        record[headers[i]] = col.get_text(strip=True)
-                results.append(record)
-
-        except Exception as e:
-            logger.error(f"Failed to fetch OPD list part: {e}")
-
-# --- Bulk Migration of Other Patient Tasks ---
-
-class PatientInfoParams(BaseModel):
-    hisno: str = Field(..., description="Hospital Number")
-
-class PatientInfoTask(CrawlerTask):
-    """
-    取得病人詳細基本資料。
-    
-    Args:
-        hisno: 病歷號
-    
-    Returns:
-        Dict 包含欄位:
-        - 病歷號, 病房床號, 姓名, 生日, 性別, 血型
-        - 身份證號, 科別, 來院狀況, 身分, 病患狀態
-        - 電話１, 電話２, 行動電話, 地址, ＥＭＡＩＬ
-        - 目前診斷, 主治醫師, 住院醫師, 實習醫師, 醫五Clerk
-        - 最近就診日, 傳染病註記, 吸菸習慣, 嚼檳榔習慣
-        - 緊急聯絡人, 緊急聯絡人電話
-    """
-    id = "patient_info"
-    name = "Patient Info"
-    description = "病人基本資料 - 取得詳細個人資訊"
-    params_model = PatientInfoParams
-
-    async def run(self, params: PatientInfoParams, client: VghClient) -> Dict[str, str]:
-        if not await client.ensure_eip(): return {}
-        session = client.session
-        if not await select_patient(session, params.hisno): return {}
-        
-        url = 'https://web9.vghtpe.gov.tw/emr/qemr/qemr.cfm'
-        payload = {'action': 'findPba', 'histno': str(params.hisno), '_': 0}
-        
-        resp = await session.get(url, params=payload)
-        soup = BeautifulSoup(resp.text, 'lxml')
-        data = {}
-        rows = soup.find_all('tr')
-        for row in rows:
-            cols = row.find_all('td')
-            if len(cols) == 2:
-                label = cols[0].get_text(strip=True)
-                # Clean label: remove "０１．" prefix etc.
-                if '．' in label:
-                     label = label.split('．')[-1]
-                label = label.replace('：', '').replace('　', '')
-                val = cols[1].get_text(strip=True)
-                data[label] = val
-        return data
+    hisno: str = Field(..., description="病歷號")
+    old_than_four_years: bool = Field(default=True, description="包含 4 年前紀錄")
 
 class PatientOpdNoteParams(BaseModel):
-    hisno: str
-    dt: str
-    dept: str
-    doc: str = ""
-    deptnm: str = ""
-
-from urllib.parse import quote
-
-class PatientOpdNoteTask(CrawlerTask):
-    """
-    取得特定門診的 SOAP 病歷內容。
-    
-    Args:
-        hisno: 病歷號
-        dt: 門診日期 (來自 opd_list)
-        dept: 科別代碼
-        doc: 門診醫師 (可選)
-        deptnm: 科別名稱 (可選)
-    
-    Returns:
-        Dict 包含欄位:
-        - hisno, dt, dept, doc, deptnm: 輸入參數原樣回傳
-        - S: str - Subjective (主觀資料)
-        - O: str - Objective (客觀資料)
-        - P: str - Plan (治療計畫)
-        - soap: str - 完整 SOAP 內容
-        - drugs: str - 用藥記錄
-        - orders: str - 門診醫囑
-    """
-    id = "patient_opd_note"
-    name = "OPD Note (SOAP)"
-    description = "門診 SOAP 病歷 - 取得特定門診病歷內容"
-    params_model = PatientOpdNoteParams
-
-    async def run(self, params: PatientOpdNoteParams, client: VghClient) -> Dict[str, str]:
-        if not await client.ensure_eip(): return {}
-        session = client.session
-        if not await select_patient(session, params.hisno): return {}
-        
-        url = 'https://web9.vghtpe.gov.tw/emr/qemr/qemr.cfm'
-        # Need manual quoting for Big5 encoding if required by server?
-        # Old code used: quote(doc, encoding='big5'). 
-        # Requests/Httpx handles encoding but URL params might be tricky.
-        # We will try standard dict first. If it fails, we handle encoding manually.
-        # Actually httpx params are utf-8 by default. If server needs Big5, we might need manual string construction.
-        # The old code EXPLICITLY quotes with big5. We should replicate that or let httpx handle it if we can set encoding.
-        # Safest is to construct URL string or use encoded bytes.
-        
-        # NOTE: Httpx params accepts bytes.
-        
-        payload = {
-            'action': 'findOpd',
-            'histno': str(params.hisno),
-            'dt': params.dt,
-            'dept': params.dept,
-            'doc': params.doc, # Might need Big5
-            'deptnm': params.deptnm, # Might need Big5
-            '_': 0
-        }
-        
-        # TODO: Handle Big5 encoding for 'doc' and 'deptnm' if requests fail.
-        # For now, implementing struct.
-        
-        resp = await session.get(url, params=payload)
-        soup = BeautifulSoup(resp.text, 'lxml')
-        
-        data = params.model_dump()
-        
-        pre_tags = soup.find_all('pre')
-        if len(pre_tags) >= 2:
-            data['S'] = pre_tags[0].get_text()
-            data['O'] = pre_tags[1].get_text()
-            data['P'] = pre_tags[2].get_text() if len(pre_tags) > 2 else ""
-        
-        # Legend parsing
-        def get_fieldset_text(legend_text):
-            elem = soup.find('legend', string=lambda t: t and legend_text in t)
-            if elem:
-                return elem.find_parent('fieldset').get_text()
-            return ""
-
-        # S/O/A/P logic in old code:
-        # soap = soup.find('legend').find_parent('fieldset').get_text()
-        first_legend = soup.find('legend')
-        if first_legend:
-             data['soap'] = first_legend.find_parent('fieldset').get_text()
-        
-        data['drugs'] = get_fieldset_text('[用藥記錄]')
-        data['orders'] = get_fieldset_text('[門診醫囑]')
-        
-        return data
-
-class PatientOpListParams(BaseModel):
-    hisno: str
-
-class PatientOpListTask(CrawlerTask):
-    id = "patient_op_list"
-    name = "Operation List"
-    description = "Get operation list. (Ported from vghbot_crawler.op_list)\n" \
-                  "Original Comment: 病人:手術清單"
-    params_model = PatientOpListParams
-
-    async def run(self, params: PatientOpListParams, client: VghClient) -> List[Dict[str,str]]:
-         if not await client.ensure_eip(): return []
-         session = client.session
-         # Similar to opd_list parse logic
-         if not await select_patient(session, params.hisno): return []
-         url = 'https://web9.vghtpe.gov.tw/emr/qemr/qemr.cfm'
-         payload = {'action': 'findOpn', 'histno': str(params.hisno), '_': 0}
-         resp = await session.get(url, params=payload)
-         # Using generic table parser[內碼] 
-         soup = BeautifulSoup(resp.text, 'lxml')
-         table = soup.find('table', id='opnlist')
-         if not table: return []
-         
-         # Reuse generic parser... (Copy-paste for now to keep independent)
-         headers = []
-         rows = table.find_all('tr')
-         if not rows: return []
-         headers = [th.get_text(strip=True) for th in rows[0].find_all(['th', 'td'])]
-         res = []
-         for row in rows[1:]:
-             cols = row.find_all('td')
-             rec = {}
-             for i,c in enumerate(cols):
-                 if i<len(headers): rec[headers[i]] = c.get_text(strip=True)
-             res.append(rec)
-         return res
+    hisno: str = Field(..., description="病歷號")
+    dt: str = Field(..., description="門診日期")
+    dept: str = Field(..., description="科別代碼")
+    doc: Optional[str] = Field(None, description="醫師")
+    deptnm: Optional[str] = Field(None, description="科別名稱")
 
 class PatientOpNoteParams(BaseModel):
-    hisno: str
-    dt: str
-
-class PatientOpNoteTask(CrawlerTask):
-    id = "patient_op_note"
-    name = "Operation Note"
-    description = "Get operation note text. (Ported from vghbot_crawler.op_note)\n" \
-                  "Original Comment: 病人:手術note"
-    params_model = PatientOpNoteParams
-    
-    async def run(self, params: PatientOpNoteParams, client: VghClient) -> str:
-         if not await client.ensure_eip(): return ""
-         session = client.session
-         if not await select_patient(session, params.hisno): return ""
-         url = 'https://web9.vghtpe.gov.tw/emr/qemr/qemr.cfm'
-         payload = {'action': 'findOpn', 'histno': params.hisno, 'dt': params.dt, 'tm': 1, '_': 0}
-         resp = await session.get(url, params=payload)
-         return resp.text
-
-class PatientAdListTask(CrawlerTask):
-    id = "patient_ad_list"
-    name = "Admission List"
-    description = "Get admission list. (Ported from vghbot_crawler.ad_list)\n" \
-                  "Original Comment: 病人:住院清單"
-    params_model = PatientOpListParams # Shared params
-
-    async def run(self, params: PatientOpListParams, client: VghClient) -> List[Dict[str,str]]:
-         if not await client.ensure_eip(): return []
-         session = client.session
-         if not await select_patient(session, params.hisno): return []
-         url = 'https://web9.vghtpe.gov.tw/emr/qemr/qemr.cfm'
-         payload = {'action': 'findAdm', 'histno': str(params.hisno), '_': 0}
-         resp = await session.get(url, params=payload)
-         soup = BeautifulSoup(resp.text, 'lxml')
-         table = soup.find('table', id='admlist')
-         if not table: return []
-         rows = table.find_all('tr')
-         if not rows: return []
-         headers = [th.get_text(strip=True) for th in rows[0].find_all(['th', 'td'])]
-         res = []
-         for row in rows[1:]:
-             cols = row.find_all('td')
-             rec = {}
-             for i,c in enumerate(cols):
-                 if i < len(headers): rec[headers[i]] = c.get_text(strip=True)
-             res.append(rec)
-         return res
+    hisno: str = Field(..., description="病歷號")
+    dt: str = Field(..., description="手術日期 (YYYY-MM-DD)")
 
 class PatientAdNoteParams(BaseModel):
-    hisno: str
-    caseno: str
-    adidate: str
-    
-class PatientAdNoteTask(CrawlerTask):
-    id = "patient_ad_note"
-    name = "Admission Note"
-    description = "Get admission note text. (Ported from vghbot_crawler.ad_note)\n" \
-                  "Original Comment: 病人:住院note"
-    params_model = PatientAdNoteParams
-    
-    async def run(self, params: PatientAdNoteParams, client: VghClient) -> str:
-         if not await client.ensure_eip(): return ""
-         session = client.session
-         if not await select_patient(session, params.hisno): return ""
-         url = 'https://web9.vghtpe.gov.tw/emr/qemr/qemr.cfm'
-         payload = {'action': 'findAdm', 'histno': params.hisno, 'caseno': params.caseno, 'adidate': params.adidate, 'tm': 1, '_': 0}
-         resp = await session.get(url, params=payload)
-         return resp.text
-
-# --- Drug Tasks ---
-
-class PatientDrugListTask(CrawlerTask):
-    id = "patient_drug_list"
-    name = "Drug List"
-    description = "Get patient drug/medication list history."
-    params_model = PatientOpListParams 
-
-    async def run(self, params: PatientOpListParams, client: VghClient) -> List[Dict[str,str]]:
-         if not await client.ensure_eip(): return []
-         session = client.session
-         if not await select_patient(session, params.hisno): return []
-         url = 'https://web9.vghtpe.gov.tw/emr/qemr/qemr.cfm'
-         payload = {'action': 'findUd', 'histno': str(params.hisno), '_': 0}
-         resp = await session.get(url, params=payload)
-         soup = BeautifulSoup(resp.text, 'lxml')
-         table = soup.find('table', id='caselist')
-         if not table: return []
-         rows = table.find_all('tr')
-         if not rows: return []
-         headers = [th.get_text(strip=True) for th in rows[0].find_all(['th', 'td'])]
-         res = []
-         for row in rows[1:]:
-             cols = row.find_all('td')
-             rec = {}
-             for i,c in enumerate(cols):
-                 if i < len(headers): rec[headers[i]] = c.get_text(strip=True)
-             res.append(rec)
-         return res
+    hisno: str = Field(..., description="病歷號")
+    caseno: str = Field(..., description="住院案件號")
+    adidate: str = Field(..., description="入院日期")
 
 class PatientDrugContentParams(BaseModel):
-    hisno: str
-    caseno: str
-    dt: str
-    type: str
-    dept: str
-    dt1: str 
-    
-class PatientDrugContentTask(CrawlerTask):
-    id = "patient_drug_content"
-    name = "Drug Content"
-    description = "Get details of a specific drug prescription."
-    params_model = PatientDrugContentParams
-
-    async def run(self, params: PatientDrugContentParams, client: VghClient) -> List[Dict[str,str]]:
-         if not await client.ensure_eip(): return []
-         session = client.session
-         if not await select_patient(session, params.hisno): return []
-         url = 'https://web9.vghtpe.gov.tw/emr/qemr/qemr.cfm'
-         payload = {
-             'action': 'findUd',
-             'histno': str(params.hisno),
-             'caseno': params.caseno,
-             'dt': params.dt, 
-             'type': params.type,
-             'dept': params.dept,
-             'dt1': params.dt1,
-             '_': 0
-         }
-         resp = await session.get(url, params=payload)
-         soup = BeautifulSoup(resp.text, 'lxml')
-         table = soup.find('table', id='udorder')
-         if not table: return []
-         rows = table.find_all('tr')
-         if not rows: return []
-         headers = [th.get_text(strip=True) for th in rows[0].find_all(['th', 'td'])]
-         res = []
-         for row in rows[1:]:
-             cols = row.find_all('td')
-             rec = {}
-             for i,c in enumerate(cols):
-                 if i < len(headers): rec[headers[i]] = c.get_text(strip=True)
-             res.append(rec)
-         return res
-
-# --- Consult Tasks ---
-
-class PatientConsultListTask(CrawlerTask):
-    id = "patient_consult_list"
-    name = "Consultation List"
-    description = "Get consultation list."
-    params_model = PatientOpListParams 
-
-    async def run(self, params: PatientOpListParams, client: VghClient) -> List[Dict[str,str]]:
-         if not await client.ensure_eip(): return []
-         session = client.session
-         if not await select_patient(session, params.hisno): return []
-         url = 'https://web9.vghtpe.gov.tw/emr/qemr/qemr.cfm'
-         payload = {'action': 'findCps', 'histno': str(params.hisno), '_': 0}
-         resp = await session.get(url, params=payload)
-         soup = BeautifulSoup(resp.text, 'lxml')
-         table = soup.find('table', id='cpslist')
-         if not table: return []
-         rows = table.find_all('tr')
-         if not rows: return []
-         headers = [th.get_text(strip=True) for th in rows[0].find_all(['th', 'td'])]
-         res = []
-         for row in rows[1:]:
-             cols = row.find_all('td')
-             rec = {}
-             for i,c in enumerate(cols):
-                 if i < len(headers): rec[headers[i]] = c.get_text(strip=True)
-             res.append(rec)
-         return res
+    hisno: str = Field(..., description="病歷號")
+    caseno: str = Field(..., description="案件號")
+    dt: str = Field(..., description="日期")
+    type: str = Field(..., description="類別 (O/I/E)")
+    dept: str = Field(..., description="科別代碼")
+    dt1: Optional[str] = Field(None, description="結束日期")
 
 class PatientConsultNoteParams(BaseModel):
-    hisno: str
-    caseno: str
-    oseq: str
-
-class PatientConsultNoteTask(CrawlerTask):
-    id = "patient_consult_note"
-    name = "Consultation Note"
-    description = "Get consultation text."
-    params_model = PatientConsultNoteParams
-
-    async def run(self, params: PatientConsultNoteParams, client: VghClient) -> str:
-         if not await client.ensure_eip(): return ""
-         session = client.session
-         if not await select_patient(session, params.hisno): return ""
-         url = 'https://web9.vghtpe.gov.tw/emr/qemr/qemr.cfm'
-         payload = {
-             'action': 'findCps', 
-             'histno': str(params.hisno), 
-             'caseno': params.caseno,
-             'oseq': params.oseq,
-             '_': 0
-         }
-         resp = await session.get(url, params=payload)
-         return resp.text
-
-# --- Scanned Note Task ---
-
-class PatientScanNoteParams(BaseModel):
-    tdept: str = Field(default="OPH", description="Department code")
-
-class PatientScanedNoteTask(CrawlerTask):
-    id = "patient_scaned_note"
-    name = "Scanned Note List"
-    description = "Get list of scanned notes."
-    params_model = PatientScanNoteParams
-
-    async def run(self, params: PatientScanNoteParams, client: VghClient) -> List[Dict[str,str]]:
-         if not await client.ensure_eip(): return []
-         session = client.session
-         url = 'https://web9.vghtpe.gov.tw/emr/qemr/qemr.cfm'
-         payload = {'action': 'findScan', 'tdept': params.tdept, '_': 0}
-         resp = await session.get(url, params=payload)
-         soup = BeautifulSoup(resp.text, 'lxml')
-         table = soup.find('table') 
-         if not table: return []
-         rows = table.find_all('tr')
-         if not rows: return []
-         headers = [th.get_text(strip=True) for th in rows[0].find_all(['th', 'td'])]
-         res = []
-         for row in rows[1:]:
-             cols = row.find_all('td')
-             rec = {}
-             for i,c in enumerate(cols):
-                 if i < len(headers): rec[headers[i]] = c.get_text(strip=True)
-             res.append(rec)
-         return res
-
-
-
-# --- Advanced Tasks ---
-import re
+    hisno: str = Field(..., description="病歷號")
+    caseno: str = Field(..., description="會診案件號")
+    oseq: str = Field(..., description="會診序號")
 
 class PatientOpdListSearchParams(BaseModel):
-    hisno: str
-    doc_regex: str = Field(default="", description="Regex for Doctor Name")
-    dept_regex: str = Field(default="", description="Regex for Dept Name/Code")
-    old_than_four_years: bool = True
+    hisno: str = Field(..., description="病歷號")
+    doc_regex: Optional[str] = Field(None, description="醫師過濾 regex")
+    dept_regex: Optional[str] = Field(None, description="科別過濾 regex")
+    old_than_four_years: bool = Field(default=True)
 
-class PatientOpdListSearchTask(CrawlerTask):
-    id = "patient_opd_list_search"
-    name = "Search OPD List"
-    description = "Search OPD list with client-side filtering."
-    params_model = PatientOpdListSearchParams
+class PatientScanedNoteParams(BaseModel):
+    tdept: str = Field(default="OPH", description="科別代碼")
 
-    async def run(self, params: PatientOpdListSearchParams, client: VghClient) -> List[Dict[str,str]]:
-        base_task = PatientOpdListTask()
-        base_params = PatientOpdListParams(
-            hisno=params.hisno,
-            old_than_four_years=params.old_than_four_years
-        )
+
+# --- Helpers ---
+
+async def _select_patient(session, hisno: str) -> bool:
+    """選擇病人 session。"""
+    url = "https://web9.vghtpe.gov.tw/emr/qemr/qemr.cfm"
+    resp = await session.get(url, params={'action': 'findEmr', 'histno': str(hisno)})
+    return '電子病歷查詢系統操作發生異常' not in resp.text
+
+
+# --- Tasks ---
+
+@crawler_task(
+    id="patient_search",
+    name="Patient Search",
+    description="搜尋病人 - 用病歷號/身分證號/姓名查詢",
+    params_model=PatientSearchParams
+)
+async def patient_search(params: PatientSearchParams, client: VghClient) -> TaskResult:
+    """搜尋病人。"""
+    if not await client.ensure_eip():
+        return TaskResult.fail("EIP 登入失敗")
+    
+    url = 'https://web9.vghtpe.gov.tw/emr/qemr/qemr.cfm?action=findPatient'
+    payload = {
+        'wd': params.ward, 'histno': params.hisno or '', 'pidno': params.pidno or '',
+        'namec': params.name or '', 'drid': '', 'er': '0', 'bilqrta': '0',
+        'bilqrtdt': '', 'bildurdt': '0', 'other': '0', 'nametype': ''
+    }
+    
+    resp = await client.session.post(url, data=payload)
+    if '電子病歷查詢系統操作發生異常' in resp.text:
+        return TaskResult.fail("系統異常")
+    
+    return TaskResult.ok(parse_table(resp.text, 'patlist'))
+
+
+@crawler_task(
+    id="patient_info",
+    name="Patient Info",
+    description="取得病人完整基本資料",
+    params_model=PatientHisnoParams
+)
+async def patient_info(params: PatientHisnoParams, client: VghClient) -> TaskResult:
+    """取得病人完整基本資料。"""
+    if not await client.ensure_eip():
+        return TaskResult.fail("EIP 登入失敗")
+    
+    session = client.session
+    if not await _select_patient(session, params.hisno):
+        return TaskResult.fail("病人選擇失敗")
+    
+    url = 'https://web9.vghtpe.gov.tw/emr/qemr/qemr.cfm'
+    resp = await session.get(url, params={'action': 'findPba', 'histno': str(params.hisno), '_': 0})
+    
+    soup = BeautifulSoup(resp.text, 'lxml')
+    data = {}
+    
+    for row in soup.find_all('tr'):
+        cells = row.find_all('td')
+        if len(cells) >= 2:
+            label = cells[0].get_text(strip=True)
+            value = cells[1].get_text(strip=True)
+            if '．' in label:
+                key = label.split('．')[1].replace('：', '').replace('　', '').strip()
+                if key:
+                    data[key] = value if value != '－' else ''
+    
+    return TaskResult.ok(data)
+
+
+@crawler_task(
+    id="patient_opd_list",
+    name="Patient OPD List",
+    description="取得病人門診清單",
+    params_model=PatientOpdListParams
+)
+async def patient_opd_list(params: PatientOpdListParams, client: VghClient) -> TaskResult:
+    """取得病人門診清單。"""
+    if not await client.ensure_eip():
+        return TaskResult.fail("EIP 登入失敗")
+    
+    session = client.session
+    if not await _select_patient(session, params.hisno):
+        return TaskResult.fail("病人選擇失敗")
+    
+    url = 'https://web9.vghtpe.gov.tw/emr/qemr/qemr.cfm'
+    results = []
+    
+    resp = await session.get(url, params={'action': 'findOpd', 'histno': str(params.hisno), '_': 0})
+    if '無門診' not in resp.text:
+        results.extend(parse_table(resp.text, 'opdlist'))
+    
+    if params.old_than_four_years:
+        resp = await session.get(url, params={'action': 'findOpd01', 'histno': str(params.hisno), '_': 0})
+        if '無門診' not in resp.text:
+            results.extend(parse_table(resp.text, 'opdlist01'))
+    
+    return TaskResult.ok(results)
+
+
+@crawler_task(
+    id="patient_opd_note",
+    name="Patient OPD Note",
+    description="取得門診 SOAP 病歷",
+    params_model=PatientOpdNoteParams
+)
+async def patient_opd_note(params: PatientOpdNoteParams, client: VghClient) -> TaskResult:
+    """取得門診 SOAP 病歷。"""
+    if not await client.ensure_eip():
+        return TaskResult.fail("EIP 登入失敗")
+    
+    session = client.session
+    if not await _select_patient(session, params.hisno):
+        return TaskResult.fail("病人選擇失敗")
+    
+    url = 'https://web9.vghtpe.gov.tw/emr/qemr/qemr.cfm'
+    payload = {'action': 'findOpd', 'histno': params.hisno, 'dt': params.dt, 'dept': params.dept,
+               'doc': params.doc or '', 'deptnm': params.deptnm or '', 'tm': 1, '_': 0}
+    resp = await session.get(url, params=payload)
+    
+    soup = BeautifulSoup(resp.text, 'lxml')
+    data = {'hisno': params.hisno, 'dt': params.dt, 'dept': params.dept,
+            'S': '', 'O': '', 'P': '', 'soap': '', 'drugs': '', 'orders': ''}
+    
+    for sid, key in [('S', 'S'), ('O', 'O'), ('P', 'P'), ('SOAP', 'soap')]:
+        el = soup.find(id=sid)
+        if el:
+            data[key] = el.get_text(strip=True)
+    
+    for div_id, key in [('drugs', 'drugs'), ('opdord', 'orders')]:
+        el = soup.find(id=div_id)
+        if el:
+            data[key] = el.get_text(strip=True)
+    
+    return TaskResult.ok(data)
+
+
+@crawler_task(
+    id="patient_op_list",
+    name="Patient Op List",
+    description="取得病人已完成的手術紀錄清單",
+    params_model=PatientHisnoParams
+)
+async def patient_op_list(params: PatientHisnoParams, client: VghClient) -> TaskResult:
+    """取得病人已完成的手術紀錄清單。"""
+    if not await client.ensure_eip():
+        return TaskResult.fail("EIP 登入失敗")
+    
+    session = client.session
+    if not await _select_patient(session, params.hisno):
+        return TaskResult.fail("病人選擇失敗")
+    
+    url = 'https://web9.vghtpe.gov.tw/emr/qemr/qemr.cfm'
+    resp = await session.get(url, params={'action': 'findOpn', 'histno': str(params.hisno), '_': 0})
+    
+    soup = BeautifulSoup(resp.text, 'lxml')
+    table = soup.find('table', id='opnlist')
+    if not table:
+        return TaskResult.ok([])
+    
+    rows = table.find_all('tr')
+    if not rows:
+        return TaskResult.ok([])
+    
+    headers = [th.get_text(strip=True) for th in rows[0].find_all(['th', 'td'])]
+    results = []
+    
+    for row in rows[1:]:
+        cols = row.find_all('td')
+        if not cols:
+            continue
         
-        raw_list = await base_task.run(base_params, client)
+        record = {headers[i]: col.get_text(strip=True) for i, col in enumerate(cols) if i < len(headers)}
         
-        if not raw_list:
-            return []
-            
-        results = []
-        doc_pattern = re.compile(params.doc_regex, re.IGNORECASE) if params.doc_regex else None
-        dept_pattern = re.compile(params.dept_regex, re.IGNORECASE) if params.dept_regex else None
+        link = row.find('a')
+        if link and link.has_attr('href'):
+            match = re.search(r'dt=(\d{8})', link['href'])
+            if match:
+                record['手術日期_iso'] = to_iso_string(match.group(1))
         
-        for item in raw_list:
-            doc_val = item.get('門診醫師', '')
-            dept_val = item.get('科別', '')
-            
-            match_doc = (not doc_pattern) or bool(doc_pattern.search(doc_val))
-            match_dept = (not dept_pattern) or bool(dept_pattern.search(dept_val))
-            
-            if match_doc and match_dept:
-                results.append(item)
-                
-        return results
+        results.append(record)
+    
+    return TaskResult.ok(results)
 
-# Register all
-# TaskRegistry.register(PatientOpdListSearchTask())
 
+@crawler_task(
+    id="patient_op_schedule",
+    name="Patient Op Schedule",
+    description="取得病人預定的手術排程清單",
+    params_model=PatientHisnoParams
+)
+async def patient_op_schedule(params: PatientHisnoParams, client: VghClient) -> TaskResult:
+    """取得病人預定的手術排程清單。"""
+    if not await client.ensure_eip():
+        return TaskResult.fail("EIP 登入失敗")
+    
+    session = client.session
+    if not await _select_patient(session, params.hisno):
+        return TaskResult.fail("病人選擇失敗")
+    
+    url = 'https://web9.vghtpe.gov.tw/emr/qemr/qemr.cfm'
+    resp = await session.get(url, params={'action': 'findOpb', 'histno': str(params.hisno), '_': 0})
+    
+    soup = BeautifulSoup(resp.text, 'lxml')
+    table = soup.find('table')
+    if not table:
+        return TaskResult.ok([])
+    
+    rows = table.find_all('tr')
+    if not rows:
+        return TaskResult.ok([])
+    
+    headers = [th.get_text(strip=True) for th in rows[0].find_all(['th', 'td'])]
+    results = []
+    for row in rows[1:]:
+        cols = row.find_all('td')
+        if not cols:
+            continue
+        record = {headers[i]: col.get_text(strip=True) for i, col in enumerate(cols) if i < len(headers)}
+        
+        if '排程日期' in record and record['排程日期']:
+            record['排程日期_iso'] = to_iso_string(record['排程日期'])
+        
+        results.append(record)
+    
+    return TaskResult.ok(results)
+
+
+@crawler_task(
+    id="patient_op_note",
+    name="Patient Op Note",
+    description="取得手術病歷 (HTML)",
+    params_model=PatientOpNoteParams
+)
+async def patient_op_note(params: PatientOpNoteParams, client: VghClient) -> TaskResult:
+    """取得手術病歷 (HTML)。"""
+    if not await client.ensure_eip():
+        return TaskResult.fail("EIP 登入失敗")
+    
+    session = client.session
+    if not await _select_patient(session, params.hisno):
+        return TaskResult.fail("病人選擇失敗")
+    
+    api_date = to_roc_date_8(params.dt) or params.dt
+    
+    url = 'https://web9.vghtpe.gov.tw/emr/qemr/qemr.cfm'
+    resp = await session.get(url, params={'action': 'findOpn', 'histno': params.hisno, 'dt': api_date, 'tm': 1, '_': 0})
+    return TaskResult.ok(resp.text)
+
+
+@crawler_task(
+    id="patient_ad_list",
+    name="Patient Ad List",
+    description="取得病人住院清單",
+    params_model=PatientHisnoParams
+)
+async def patient_ad_list(params: PatientHisnoParams, client: VghClient) -> TaskResult:
+    """取得病人住院清單。"""
+    if not await client.ensure_eip():
+        return TaskResult.fail("EIP 登入失敗")
+    
+    session = client.session
+    if not await _select_patient(session, params.hisno):
+        return TaskResult.fail("病人選擇失敗")
+    
+    url = 'https://web9.vghtpe.gov.tw/emr/qemr/qemr.cfm'
+    resp = await session.get(url, params={'action': 'findAdm', 'histno': str(params.hisno), '_': 0})
+    
+    soup = BeautifulSoup(resp.text, 'lxml')
+    table = soup.find('table', id='admlist')
+    if not table:
+        return TaskResult.ok([])
+    
+    rows = table.find_all('tr')
+    if not rows:
+        return TaskResult.ok([])
+    
+    headers = [th.get_text(strip=True) for th in rows[0].find_all(['th', 'td'])]
+    results = []
+    
+    for row in rows[1:]:
+        cols = row.find_all('td')
+        if not cols:
+            continue
+        
+        record = {headers[i]: col.get_text(strip=True) for i, col in enumerate(cols) if i < len(headers)}
+        
+        link = row.find('a')
+        if link and link.has_attr('href'):
+            href = link['href']
+            caseno_match = re.search(r'caseno=(\d+)', href)
+            adidate_match = re.search(r'adidate=(\d+)', href)
+            if caseno_match:
+                record['caseno'] = caseno_match.group(1)
+            if adidate_match:
+                record['adidate'] = adidate_match.group(1)
+        
+        if '住院日期' in record and len(record['住院日期']) == 8:
+            d = record['住院日期']
+            record['住院日期_iso'] = f"{d[:4]}-{d[4:6]}-{d[6:]}"
+        
+        results.append(record)
+    
+    return TaskResult.ok(results)
+
+
+@crawler_task(
+    id="patient_ad_note",
+    name="Patient Ad Note",
+    description="取得住院病歷摘要 (HTML)",
+    params_model=PatientAdNoteParams
+)
+async def patient_ad_note(params: PatientAdNoteParams, client: VghClient) -> TaskResult:
+    """取得住院病歷摘要 (HTML)。"""
+    if not await client.ensure_eip():
+        return TaskResult.fail("EIP 登入失敗")
+    
+    session = client.session
+    if not await _select_patient(session, params.hisno):
+        return TaskResult.fail("病人選擇失敗")
+    
+    api_date = to_yyyymmdd(params.adidate) or params.adidate
+    
+    url = 'https://web9.vghtpe.gov.tw/emr/qemr/qemr.cfm'
+    resp = await session.get(url, params={'action': 'findAdm', 'histno': params.hisno, 'caseno': params.caseno, 'adidate': api_date, '_': 0})
+    return TaskResult.ok(resp.text)
+
+
+@crawler_task(
+    id="patient_drug_list",
+    name="Patient Drug List",
+    description="取得病人用藥清單",
+    params_model=PatientHisnoParams
+)
+async def patient_drug_list(params: PatientHisnoParams, client: VghClient) -> TaskResult:
+    """取得病人用藥清單。"""
+    if not await client.ensure_eip():
+        return TaskResult.fail("EIP 登入失敗")
+    
+    session = client.session
+    if not await _select_patient(session, params.hisno):
+        return TaskResult.fail("病人選擇失敗")
+    
+    url = 'https://web9.vghtpe.gov.tw/emr/qemr/qemr.cfm'
+    resp = await session.get(url, params={'action': 'findUd', 'histno': str(params.hisno), '_': 0})
+    
+    soup = BeautifulSoup(resp.text, 'lxml')
+    table = soup.find('table', id='caselist')
+    if not table:
+        return TaskResult.ok([])
+    
+    rows = table.find_all('tr')
+    if not rows:
+        return TaskResult.ok([])
+    
+    headers = [th.get_text(strip=True) for th in rows[0].find_all(['th', 'td'])]
+    results = []
+    
+    for row in rows[1:]:
+        cols = row.find_all('td')
+        if not cols:
+            continue
+        
+        record = {headers[i]: col.get_text(strip=True) for i, col in enumerate(cols) if i < len(headers)}
+        
+        link = row.find('a')
+        if link and link.has_attr('href'):
+            href = link['href']
+            for name, pattern in [('caseno', r'caseno=([A-Z0-9]+)'), ('dt', r'dt=(\d+)'),
+                                   ('type', r'type=([A-Z])'), ('dept', r'dept=([A-Z0-9]+)'), ('dt1', r'dt1=(\d+)')]:
+                m = re.search(pattern, href)
+                if m:
+                    record[name] = m.group(1)
+            if 'dt1' not in record:
+                record['dt1'] = ''
+        
+        if '日期' in record and len(record['日期']) == 8:
+            d = record['日期']
+            record['日期_iso'] = f"{d[:4]}-{d[4:6]}-{d[6:]}"
+        
+        results.append(record)
+    
+    return TaskResult.ok(results)
+
+
+@crawler_task(
+    id="patient_drug_content",
+    name="Patient Drug Content",
+    description="取得用藥詳細內容",
+    params_model=PatientDrugContentParams
+)
+async def patient_drug_content(params: PatientDrugContentParams, client: VghClient) -> TaskResult:
+    """取得用藥詳細內容。"""
+    if not await client.ensure_eip():
+        return TaskResult.fail("EIP 登入失敗")
+    
+    session = client.session
+    if not await _select_patient(session, params.hisno):
+        return TaskResult.fail("病人選擇失敗")
+    
+    api_dt = to_yyyymmdd(params.dt) or params.dt
+    api_dt1 = to_yyyymmdd(params.dt1) if params.dt1 else ''
+    
+    url = 'https://web9.vghtpe.gov.tw/emr/qemr/qemr.cfm'
+    resp = await session.get(url, params={
+        'action': 'findUd', 'histno': str(params.hisno), 'caseno': params.caseno,
+        'dt': api_dt, 'type': params.type, 'dept': params.dept, 'dt1': api_dt1, '_': 0
+    })
+    return TaskResult.ok(parse_table(resp.text, 'udorder'))
+
+
+@crawler_task(
+    id="patient_consult_list",
+    name="Patient Consult List",
+    description="取得病人會診清單",
+    params_model=PatientHisnoParams
+)
+async def patient_consult_list(params: PatientHisnoParams, client: VghClient) -> TaskResult:
+    """取得病人會診清單。"""
+    if not await client.ensure_eip():
+        return TaskResult.fail("EIP 登入失敗")
+    
+    session = client.session
+    if not await _select_patient(session, params.hisno):
+        return TaskResult.fail("病人選擇失敗")
+    
+    url = 'https://web9.vghtpe.gov.tw/emr/qemr/qemr.cfm'
+    resp = await session.get(url, params={'action': 'findCps', 'histno': str(params.hisno), '_': 0})
+    
+    soup = BeautifulSoup(resp.text, 'lxml')
+    table = soup.find('table', id='cpslist')
+    if not table:
+        return TaskResult.ok([])
+    
+    rows = table.find_all('tr')
+    if not rows:
+        return TaskResult.ok([])
+    
+    headers = [th.get_text(strip=True) for th in rows[0].find_all(['th', 'td'])]
+    results = []
+    
+    for row in rows[1:]:
+        cols = row.find_all('td')
+        if not cols:
+            continue
+        
+        record = {headers[i]: col.get_text(strip=True) for i, col in enumerate(cols) if i < len(headers)}
+        
+        link = row.find('a')
+        if link and link.has_attr('href'):
+            href = link['href']
+            caseno_match = re.search(r'caseno=([A-Z0-9]+)', href)
+            oseq_match = re.search(r'oseq=(\d+)', href)
+            if caseno_match:
+                record['caseno'] = caseno_match.group(1)
+            if oseq_match:
+                record['oseq'] = oseq_match.group(1)
+        
+        if '會診日期' in record and len(record['會診日期']) == 8:
+            d = record['會診日期']
+            record['會診日期_iso'] = f"{d[:4]}-{d[4:6]}-{d[6:]}"
+        
+        results.append(record)
+    
+    return TaskResult.ok(results)
+
+
+@crawler_task(
+    id="patient_consult_note",
+    name="Patient Consult Note",
+    description="取得會診內容 (HTML)",
+    params_model=PatientConsultNoteParams
+)
+async def patient_consult_note(params: PatientConsultNoteParams, client: VghClient) -> TaskResult:
+    """取得會診內容 (HTML)。"""
+    if not await client.ensure_eip():
+        return TaskResult.fail("EIP 登入失敗")
+    
+    session = client.session
+    if not await _select_patient(session, params.hisno):
+        return TaskResult.fail("病人選擇失敗")
+    
+    url = 'https://web9.vghtpe.gov.tw/emr/qemr/qemr.cfm'
+    resp = await session.get(url, params={'action': 'findCps', 'histno': str(params.hisno), 'caseno': params.caseno, 'oseq': params.oseq, '_': 0})
+    return TaskResult.ok(resp.text)
+
+
+@crawler_task(
+    id="patient_scaned_note",
+    name="Patient Scaned Note",
+    description="取得科別掃描病歷清單",
+    params_model=PatientScanedNoteParams
+)
+async def patient_scaned_note(params: PatientScanedNoteParams, client: VghClient) -> TaskResult:
+    """取得科別掃描病歷清單。"""
+    if not await client.ensure_eip():
+        return TaskResult.fail("EIP 登入失敗")
+    
+    url = 'https://web9.vghtpe.gov.tw/emr/qemr/qemr.cfm'
+    resp = await client.session.get(url, params={'action': 'findScan', 'tdept': params.tdept, '_': 0})
+    return TaskResult.ok(parse_table(resp.text, None))
+
+
+@crawler_task(
+    id="patient_opd_list_search",
+    name="Patient OPD List Search",
+    description="搜尋門診清單 (支援 regex 過濾)",
+    params_model=PatientOpdListSearchParams
+)
+async def patient_opd_list_search(params: PatientOpdListSearchParams, client: VghClient) -> TaskResult:
+    """搜尋門診清單 (支援 regex 過濾)。"""
+    result = await patient_opd_list(PatientOpdListParams(hisno=params.hisno, old_than_four_years=params.old_than_four_years), client)
+    if not result.success or not result.data:
+        return result
+    
+    doc_pat = re.compile(params.doc_regex, re.IGNORECASE) if params.doc_regex else None
+    dept_pat = re.compile(params.dept_regex, re.IGNORECASE) if params.dept_regex else None
+    
+    filtered = [
+        item for item in result.data
+        if ((not doc_pat) or doc_pat.search(item.get('門診醫師', '')))
+        and ((not dept_pat) or dept_pat.search(item.get('科別', '')))
+    ]
+    
+    return TaskResult.ok(filtered)
+
+
+# --- Legacy Compatibility ---
+PatientSearchTask = patient_search
+PatientInfoTask = patient_info
+PatientOpdListTask = patient_opd_list
+PatientOpdNoteTask = patient_opd_note
+PatientOpListTask = patient_op_list
+PatientOpNoteTask = patient_op_note
+PatientAdListTask = patient_ad_list
+PatientAdNoteTask = patient_ad_note
+PatientDrugListTask = patient_drug_list
+PatientDrugContentTask = patient_drug_content
+PatientConsultListTask = patient_consult_list
+PatientConsultNoteTask = patient_consult_note
+PatientScanedNoteTask = patient_scaned_note
+PatientOpdListSearchTask = patient_opd_list_search

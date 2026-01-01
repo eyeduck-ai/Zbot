@@ -27,8 +27,8 @@
 # 📌 應用層 Task (組合多個爬蟲 + 業務邏輯)
 from app.tasks.base import BaseTask
 
-# 📌 底層爬蟲 (單一資料來源抓取)
-from vghsdk.core import CrawlerTask, VghClient
+# 📌 底層爬蟲 (function-based, 推薦)
+from vghsdk.core import VghClient, TaskResult, crawler_task
 
 # 📌 Task 註冊
 from app.core.registry import TaskRegistry
@@ -57,10 +57,10 @@ from app.core.registry import TaskRegistry
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-| 層級 | 基類 | 職責 | progress_callback |
+| 層級 | 基類/裝飾器 | 職責 | progress_callback |
 |------|------|------|-------------------|
 | `app/tasks/` | `BaseTask` | 組合爬蟲 + 業務邏輯 | ✅ 支援 |
-| `vghsdk/modules/` | `CrawlerTask` | 單一資料來源抓取 | ❌ 不需 |
+| `vghsdk/modules/` | `@crawler_task` | 單一資料來源抓取 | ❌ 不需 |
 
 ---
 
@@ -70,12 +70,55 @@ from app.core.registry import TaskRegistry
 
 `vghsdk/core.py` 提供：
 
-| 類別 | 功能 |
+| 類別/函式 | 功能 |
 |------|------|
 | `VghClient` | 統一 VGH 客戶端，處理 EIP/CKS 登入、`safe_request()` 自動重試 |
 | `VghSession` | 低階 HTTP Session 管理 |
-| `CrawlerTask` | 爬蟲任務抽象基類 |
+| `TaskResult` | 統一回傳格式 (success, data, message, count) |
+| `@crawler_task` | 裝飾器，將 async function 註冊為 task |
 | `CrawlerConfig` | 全域爬蟲設定 (rate limit, retry 參數) |
+
+#### TaskResult 統一回傳格式
+
+```python
+class TaskResult(BaseModel):
+    success: bool = True
+    data: Any = None
+    message: str = ""
+    count: int = 0
+    
+    @classmethod
+    def ok(cls, data, message="") -> "TaskResult": ...
+    
+    @classmethod
+    def fail(cls, message) -> "TaskResult": ...
+```
+
+#### @crawler_task 裝飾器
+
+```python
+from vghsdk.core import VghClient, TaskResult, crawler_task
+from pydantic import BaseModel
+
+class MyParams(BaseModel):
+    hisno: str
+
+@crawler_task(
+    id="my_task",
+    name="My Task", 
+    description="任務說明",
+    params_model=MyParams
+)
+async def my_task(params: MyParams, client: VghClient) -> TaskResult:
+    if not await client.ensure_eip():
+        return TaskResult.fail("EIP 登入失敗")
+    
+    # 使用 safe_request 自動處理重試
+    resp = await client.safe_request("GET", url)
+    data = parse_response(resp)
+    
+    return TaskResult.ok(data)
+```
 
 #### safe_request() 功能
 
@@ -540,6 +583,15 @@ p = params
 
 ### Q: Task 沒有被註冊?
 
+**Function-based task:**
+1. 確認檔案使用 `@crawler_task` 裝飾器
+2. 確認 `app/core/loader.py` 有 import 並註冊：
+   ```python
+   from vghsdk.modules.xxx import my_task
+   TaskRegistry.register(my_task)
+   ```
+
+**Class-based task (app/tasks):**
 1. 確認檔案底部有 `TaskRegistry.register(MyTask())`
 2. 確認 `app/core/loader.py` 有 import 該模組
 
