@@ -21,7 +21,7 @@ export const BackgroundTasksIndicator: React.FC<BackgroundTasksIndicatorProps> =
             const data = await tasksApi.listJobs(10) as Job[];
             // 過濾掉 IVI/Surgery 的 fetch/preview 任務 (只保留 submit 任務)
             const HIDDEN_TASK_TYPES = [
-                'ivi_fetch_schedule',
+                'ivi_fetch',
                 'opnote_preview',
                 'note_surgery_fetch_schedule',
                 'note_surgery_fetch_details',

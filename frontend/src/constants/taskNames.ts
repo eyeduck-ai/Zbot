@@ -27,7 +27,7 @@ export const TASK_NAMES: Record<string, string> = {
     stats_fee_update: '費用統計',
 
     // IVI
-    ivi_fetch_schedule: 'IVI 排程',
+    ivi_fetch: 'IVI 排程',
     opnote_submit: 'IVI手術紀錄',
     opnote_preview: 'IVI 預覽',
     note_ivi_submit: 'IVI手術紀錄',

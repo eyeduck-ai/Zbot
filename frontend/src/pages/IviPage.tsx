@@ -85,7 +85,7 @@ export const IviPage: React.FC = () => {
         const eipPsw = localStorage.getItem('eip_psw');
 
         try {
-            const data = await tasksApi.run('ivi_fetch_schedule', {
+            const data = await tasksApi.run('ivi_fetch', {
                 params: {
                     start_date: startDate,
                     end_date: useCustomRange ? endDate : startDate

@@ -231,20 +231,40 @@ def set_cached_role_permissions(roles: dict):
     _cached_role_permissions = roles
 
 
+# 需要權限檢查的前綴 (僅 app/tasks composite tasks 和設定頁面)
+# vghsdk 的 function-based tasks (如 ivi_fetch, patient_search) 不在此列表中，自動放行
+PERMISSION_REQUIRED_PREFIXES = [
+    "note_",       # note_ivi_submit, note_surgery_*
+    "opnote_",     # opnote_preview, opnote_submit
+    "stats_",      # stats_op_update, stats_fee_update
+    "dashboard_",  # dashboard_bed
+    "settings_",   # 設定頁面相關 API (未來擴充)
+]
+
+
 def check_task_permission(role: str, task_id: str) -> bool:
     """
     檢查角色是否有權限執行指定 Task
     
+    邏輯:
+    1. vghsdk tasks (不符合 PERMISSION_REQUIRED_PREFIXES) → 直接放行
+    2. composite tasks → 根據角色的 allowed_prefixes 判斷
+    
     Args:
-        role: 使用者角色 (admin, basic, cr)
-        task_id: Task ID (如 note_ivi_submit)
+        role: 使用者角色 (admin, vs, cr, basic_*)
+        task_id: Task ID (如 note_ivi_submit, ivi_fetch)
         
     Returns:
         True 表示有權限執行
     """
+    # vghsdk tasks 不需要權限檢查 (如 ivi_fetch, patient_search, consent_*)
+    if not any(task_id.startswith(p) for p in PERMISSION_REQUIRED_PREFIXES):
+        return True
+    
+    # Composite tasks 需要檢查權限
     prefixes = get_allowed_prefixes(role)
     
-    # Admin 或有 * 前綴表示全部權限
+    # 有 * 前綴表示全部權限
     if "*" in prefixes:
         return True
     
