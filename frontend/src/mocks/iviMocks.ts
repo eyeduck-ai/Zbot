@@ -13,7 +13,7 @@ export interface IviScheduleItem {
     name: string;
     schedule_name: string;
     schedule_date: string;
-    doc_code: string;
+    vs_code: string;
     vs_name: string;
     op_start: string;
     op_end: string;
@@ -25,7 +25,7 @@ export interface IviScheduleItem {
     selected?: boolean;
     status?: 'pending' | 'ready' | 'success' | 'error';
     _original?: {
-        doc_code: string;
+        vs_code: string;
         vs_name: string;
         diagnosis: string;
         side: string;
@@ -43,7 +43,7 @@ export const MOCK_ITEMS: IviScheduleItem[] = [
         name: '王小明',
         schedule_name: 'IVI',
         schedule_date: '2025-12-11',
-        doc_code: '4106',
+        vs_code: '4106',
         vs_name: '林醫師',
         op_start: '0900',
         op_end: '0902',
@@ -60,7 +60,7 @@ export const MOCK_ITEMS: IviScheduleItem[] = [
         name: '李小華',
         schedule_name: 'IVI',
         schedule_date: '2025-12-11',
-        doc_code: '4106',
+        vs_code: '4106',
         vs_name: '林醫師',
         op_start: '0910',
         op_end: '0912',
@@ -77,7 +77,7 @@ export const MOCK_ITEMS: IviScheduleItem[] = [
         name: '張大同',
         schedule_name: 'IVI',
         schedule_date: '2025-12-11',
-        doc_code: '4107',
+        vs_code: '4107',
         vs_name: '陳醫師',
         op_start: '0920',
         op_end: '0922',

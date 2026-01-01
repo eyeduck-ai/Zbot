@@ -264,17 +264,30 @@ async def doc_batch_opd_note(params: DocBatchOpdNoteParams, client: VghClient) -
 # --- Helper for external use ---
 
 async def get_doctor_name(doc_code: str, session) -> str:
-    """根據醫師登號查詢姓名。"""
-    url = "https://web9.vghtpe.gov.tw/emr/qemr/qemr.cfm"
+    """根據醫師登號查詢姓名
+    
+    Args:
+        doc_code: 4位數字的醫師登號 (例如 "4102")
+        session: VghSession 實例
+    
+    Returns:
+        醫師姓名，若查詢失敗則返回空字串
+    """
+    url = "https://web9.vghtpe.gov.tw/emr/OPAController"
+    params = {"doc": str(doc_code), "action": "CheckDocAction"}
+    
     try:
-        resp = await session.get(url, params={'action': 'findDoc', 'doc': doc_code, '_': 0})
-        soup = BeautifulSoup(resp.text, 'lxml')
-        td = soup.find('td')
-        if td:
-            return td.get_text(strip=True)
+        res = await session.get(url, params=params)
+        name = res.text.strip()
+        if name:
+            logger.debug(f"查詢醫師登號 {doc_code} → {name}")
+            return name
+        else:
+            logger.warning(f"醫師登號 {doc_code} 查無對應姓名")
+            return ""
     except Exception as e:
-        logger.error(f"Failed to get doctor name for {doc_code}: {e}")
-    return ""
+        logger.error(f"查詢醫師登號失敗: {e}")
+        return ""
 
 
 # --- Legacy Compatibility ---

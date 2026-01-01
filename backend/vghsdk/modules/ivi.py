@@ -143,7 +143,7 @@ async def ivi_fetch(params: IviFetchParams, client: VghClient) -> TaskResult:
             "name": row.get('PatNMC'),
             "schedule_name": row.get('ScheduleName'),
             "schedule_date": row.get('ScheduleDate'),
-            "vs_code": vs_code,
+            "vs_code": vs_code,  # 醫師登號
             "vs_name": row.get('CreateName', ''),
             "op_start": sched_time,
             "op_end": end_time,
