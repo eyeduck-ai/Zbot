@@ -83,6 +83,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
         # 注意: 'role' 是 Supabase RLS 角色 (authenticated)，應用程式角色存在 'zbot_role'
         role: str = payload.get("zbot_role", "")
         allowed_prefixes: list = payload.get("allowed_prefixes", [])
+        display_name: str = payload.get("display_name", "")  # 從 token 提取顯示名稱
         if username is None:
             raise credentials_exception
         token_data = TokenData(username=username, role=role, allowed_prefixes=allowed_prefixes)
@@ -91,7 +92,12 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
     
     # In a full DB app, we would fetch user from DB here to verify active status.
     # For now, we trust the token (stateless).
-    return User(username=token_data.username, role=token_data.role, allowed_prefixes=token_data.allowed_prefixes)
+    return User(
+        username=token_data.username, 
+        full_name=display_name or None,  # 將 display_name 映射到 full_name
+        role=token_data.role, 
+        allowed_prefixes=token_data.allowed_prefixes
+    )
 
 async def get_current_admin_user(current_user: User = Depends(get_current_user)):
     # Placeholder for role check

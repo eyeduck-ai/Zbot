@@ -70,3 +70,4 @@ backend/tests
 
 RLS_GUIDE.md
 *.har
+.agent/rules

@@ -477,9 +477,13 @@ class StatsFeeTask(BaseTask):
                 except:
                     pass
         
-        # 若無法解析 JSON 陣列，視為無效資料 (可能是錯誤頁面)
+        # 若無法解析 JSON 陣列，檢查是否為「未結帳」錯誤頁面
         if data_list is None or not isinstance(data_list, list):
-            return {}, False
+            # 檢查 HTML 中是否含有「XXXXX還未結帳」錯誤訊息
+            if re.search(r'\d{5}還未結帳', text):
+                return {}, False  # 確認是未結帳錯誤，標記為無效
+            else:
+                return {}, True   # 只是該收費碼無資料，視為有效 (空資料)
         
         # 3. 遍歷資料陣列並加總
         result = defaultdict(int)

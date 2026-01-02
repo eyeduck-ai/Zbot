@@ -30,7 +30,7 @@ async def submit_report(
     msg = EmailMessage()
     msg["From"] = settings.SMTP_USER
     msg["To"] = settings.DEVELOPER_EMAIL
-    msg["Subject"] = f"[Zbot Report] {current_user.username} - Bug/升等申請"
+    msg["Subject"] = f"[Zbot Report] {current_user.full_name or current_user.username} - Bug/升等申請"
     
     today = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
