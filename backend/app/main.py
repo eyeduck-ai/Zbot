@@ -81,6 +81,10 @@ app.include_router(config_router)
 from app.routers.system import router as system_router
 app.include_router(system_router)
 
+# Cache API (快取管理)
+from app.routers.cache import router as cache_router
+app.include_router(cache_router)
+
 origins = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",

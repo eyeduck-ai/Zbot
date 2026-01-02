@@ -6,6 +6,11 @@ import { Badge } from '../components/ui/Badge';
 import { useTaskPolling } from '../hooks/useTaskPolling';
 import { useTaskStats } from '../hooks/useTaskStats';
 import { TrustBadge } from '../components/TrustBadge';
+import { CacheCheckDialog } from '../components/CacheCheckDialog';
+import type { CacheInfo } from '../components/CacheCheckDialog';
+import { tasksApi } from '../api/tasks';
+
+const TASK_ID = 'dashboard_bed';
 
 export const DashboardBedPage: React.FC = () => {
     // 預設今天 (使用本地時區)
@@ -17,23 +22,69 @@ export const DashboardBedPage: React.FC = () => {
     const [date, setDate] = useState(today);
     const [crawlDetailDays, setCrawlDetailDays] = useState(3);
 
+    // 📌 快取檢查狀態
+    const [pendingCache, setPendingCache] = useState<CacheInfo | null>(null);
+    const [showCacheDialog, setShowCacheDialog] = useState(false);
+
     // 📌 使用 useTaskPolling hook
     const { loading, progress, statusMsg, statusType, sheetUrl, runTask } = useTaskPolling();
 
     // 📌 使用 useTaskStats 取得累積統計
-    const { stats } = useTaskStats('dashboard_bed');
+    const { stats } = useTaskStats(TASK_ID);
 
-    // 執行任務
-    const handleRun = useCallback(async () => {
+    // 建立任務參數
+    const buildParams = useCallback(() => {
         const params: Record<string, string | number> = {};
-
         if (useCustomSettings) {
             params.date = date;
             params.crawl_detail_days = crawlDetailDays;
         }
+        return params;
+    }, [useCustomSettings, date, crawlDetailDays]);
 
-        await runTask('dashboard_bed', params);
-    }, [useCustomSettings, date, crawlDetailDays, runTask]);
+    // 執行任務 (跳過快取檢查)
+    const executeTask = useCallback(async () => {
+        await runTask(TASK_ID, buildParams());
+    }, [runTask, buildParams]);
+
+    // 重試快取上傳
+    const handleRetryCache = useCallback(async () => {
+        if (!pendingCache) return;
+        try {
+            const result = await tasksApi.retryCache(pendingCache.id);
+            if (result.status === 'success') {
+                setShowCacheDialog(false);
+                setPendingCache(null);
+            }
+        } catch (e) {
+            console.error('Failed to retry cache:', e);
+        }
+    }, [pendingCache]);
+
+    // 忽略快取並重新執行
+    const handleIgnoreCache = useCallback(async () => {
+        if (pendingCache) {
+            await tasksApi.deleteCache(pendingCache.id);
+        }
+        setShowCacheDialog(false);
+        setPendingCache(null);
+        await executeTask();
+    }, [pendingCache, executeTask]);
+
+    // 執行任務 (先檢查快取)
+    const handleRun = useCallback(async () => {
+        try {
+            const cacheResult = await tasksApi.checkCache(TASK_ID);
+            if (cacheResult.has_cache && cacheResult.cache) {
+                setPendingCache(cacheResult.cache);
+                setShowCacheDialog(true);
+                return;
+            }
+        } catch (e) {
+            console.error('Failed to check cache:', e);
+        }
+        await executeTask();
+    }, [executeTask]);
 
     const displaySettings = useCustomSettings
         ? `${date}，詳細爬取 ${crawlDetailDays} 天`
@@ -176,6 +227,19 @@ export const DashboardBedPage: React.FC = () => {
                     </Card>
                 )}
             </div>
+
+            {/* 快取檢查對話框 */}
+            {showCacheDialog && pendingCache && (
+                <CacheCheckDialog
+                    cache={pendingCache}
+                    onRetry={handleRetryCache}
+                    onIgnore={handleIgnoreCache}
+                    onCancel={() => {
+                        setShowCacheDialog(false);
+                        setPendingCache(null);
+                    }}
+                />
+            )}
         </div>
     );
 };

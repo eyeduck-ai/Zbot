@@ -12,11 +12,12 @@ import pygsheets
 from vghsdk.core import VghClient, VghSession
 from app.tasks.base import BaseTask
 from vghsdk.utils import to_western_date, to_roc_date
-from vghsdk.modules.surgery import SurgeryDeptScheduleTask, SurgeryScheduleParams, SurgeryDetailTask, SurgeryDetailParams
+from vghsdk.modules.surgery import surgery_dept_schedule, SurgeryScheduleParams, surgery_detail, SurgeryDetailParams
 from app.db.gsheet import get_gsheet_service
 from app.core.alert import get_setting_from_db
 from app.core.registry import TaskRegistry
 from app.core.jobs import JobManager  # 用於檢查取消狀態
+from app.core.cache import CacheManager  # 快取管理
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,7 @@ class DashboardBedResult(BaseModel):
     details: List[str]
     message: Optional[str] = None  # 用於前端顯示的訊息
     sheet_url: Optional[str] = None  # Google Sheets 連結
+    cache_id: Optional[str] = None  # 快取 ID (寫入失敗時提供)
 
 # --- Task ---
 
@@ -142,15 +144,19 @@ class DashboardBedTask(BaseTask):
         if progress_callback: await progress_callback(10, "正在讀取手術排程列表")
 
         # 1. 讀取排程列表 (Fetch List)
-        list_task = SurgeryDeptScheduleTask()
         list_params = SurgeryScheduleParams(
             query=p.query,
             date=to_roc_date(p.date) # Call Dept Schedule with ROC 
         )
         
         try:
-            # 注意：SurgeryDeptScheduleTask 預期接收 VghClient，不是 VghSession
-            raw_data = await list_task.run(list_params, client)
+            # 使用 function-based task (需傳入 params 和 client)
+            result = await surgery_dept_schedule(list_params, client)
+            if result.success:
+                raw_data = result.data
+            else:
+                logger.error(f"Failed to fetch schedule: {result.message}")
+                return DashboardBedResult(status="error", updated_rows=0, details=[f"Fetch Error: {result.message}"])
         except Exception as e:
             logger.error(f"Failed to fetch schedule: {e}")
             return DashboardBedResult(status="error", updated_rows=0, details=[f"Fetch Error: {e}"])
@@ -205,7 +211,7 @@ class DashboardBedTask(BaseTask):
         
         logger.info(f"詳細爬取: 在設定的 {p.crawl_detail_days} 天範圍內 ({today} 至 {end_date}) 找到 {len(df_to_crawl)} 筆資料 (總資料: {len(df_filtered)})")
         
-        detail_task = SurgeryDetailTask()
+        
         crawled_details = []
         
         total_crawl = len(df_to_crawl)
@@ -238,8 +244,9 @@ class DashboardBedTask(BaseTask):
                     ))
                     
                     det_params = SurgeryDetailParams(link_url=link)
-                    det = await detail_task.run(det_params, client)
-                    if det:
+                    det_result = await surgery_detail(det_params, client)
+                    if det_result.success and det_result.data:
+                        det = det_result.data
                         det['_original_index'] = idx  # 保留原始 index 以便合併
                         crawled_details.append(det)
                 except Exception as e:
@@ -314,6 +321,18 @@ class DashboardBedTask(BaseTask):
         if not targets:
              return DashboardBedResult(status="error", updated_rows=0, details=["未設定目標 Sheet (參數或 DB 皆無)"])
 
+        # ⭐ 儲存快取 (在寫入前先保存，避免資料遺失)
+        cache_data = {
+            "final_df": final_df.to_dict(),
+        }
+        cache_id = CacheManager.save_cache(
+            task_id="dashboard_bed",
+            params={"date": p.date, "query": p.query},
+            data=cache_data,
+            target_info={"targets": targets}
+        )
+        logger.info(f"DashboardBed: 資料已快取 (cache_id={cache_id})")
+
         gs = get_gsheet_service()
         update_details = []
         success_count = 0
@@ -375,7 +394,16 @@ class DashboardBedTask(BaseTask):
                 logger.error(f"Failed to update target {ts_id}: {e}")
                 update_details.append(f"Error {ts_id[:6]}: {e}")
 
-        status = "success" if success_count > 0 else "error"
+        # 根據寫入結果決定狀態
+        if success_count > 0:
+            # ⭐ 至少部分成功，刪除快取
+            CacheManager.delete_cache(cache_id)
+            cache_id = None
+            status = "success"
+        else:
+            # ⭐ 全部失敗，保留快取
+            status = "partial_success"
+            
         # 取得第一個成功的 sheet URL (包含 worksheet GID 直接開啟該工作表)
         first_sheet_id = targets[0].get('sheet_id') if targets else None
         if first_sheet_id:
@@ -385,13 +413,16 @@ class DashboardBedTask(BaseTask):
                 sheet_url = f"https://docs.google.com/spreadsheets/d/{first_sheet_id}"
         else:
             sheet_url = None
-        message = f"更新待床統計表"
+        
+        final_message = "更新待床統計表" if status == "success" else "資料已爬取但上傳失敗，可重試"
+        
         return DashboardBedResult(
             status=status,
             updated_rows=len(final_df),
             details=update_details,
-            message=message,
-            sheet_url=sheet_url
+            message=final_message,
+            sheet_url=sheet_url,
+            cache_id=cache_id
         )
 
     def _apply_conditional_formatting(self, sh, wks):
@@ -527,5 +558,79 @@ class DashboardBedTask(BaseTask):
         if requests:
             sh.custom_request(requests, fields='replies')
 
+
+# --- 快取重試函數 ---
+
+async def upload_from_cache(data: Dict[str, Any], target_info: Dict[str, Any], params: Dict[str, Any]) -> None:
+    """
+    從快取資料重新上傳到 Google Sheets
+    
+    Args:
+        data: 快取的資料 (包含 final_df)
+        target_info: 目標資訊 (targets)
+        params: 原始參數
+    """
+    # 還原 DataFrame
+    final_df = pd.DataFrame.from_dict(data.get("final_df", {}))
+    
+    targets = target_info.get("targets", [])
+    
+    if not targets:
+        raise ValueError("快取資料中無目標 Sheet 資訊")
+    
+    # 連接 Google Sheets
+    gs = get_gsheet_service()
+    
+    # 建立 Task 實例以使用其方法
+    task = DashboardBedTask()
+    
+    success_count = 0
+    for t in targets:
+        ts_id = t.get('sheet_id')
+        ts_name = t.get('worksheet_name', 'BED')
+        
+        try:
+            gc = gs.get_pygsheets_client()
+            sh = gc.open_by_key(ts_id)
+            
+            try:
+                wks = sh.worksheet_by_title(ts_name)
+            except pygsheets.WorksheetNotFound:
+                wks = sh.add_worksheet(ts_name)
+            
+            wks.clear()
+            
+            update_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            wks.update_value('A1', f"最後更新時間:{update_time}")
+            
+            wks.set_dataframe(final_df, 'A2', copy_index=False, copy_head=True)
+            
+            # 格式調整
+            requests = [{
+                'repeatCell': {
+                    'range': {'sheetId': wks.id},
+                    'cell': {
+                        'userEnteredFormat': {
+                            'horizontalAlignment': 'LEFT',
+                            'verticalAlignment': 'TOP'
+                        }
+                    },
+                    'fields': 'userEnteredFormat.horizontalAlignment, userEnteredFormat.verticalAlignment'
+                }
+            }]
+            sh.custom_request(requests, fields='replies')
+            
+            # 條件格式
+            task._apply_conditional_formatting(sh, wks)
+            
+            success_count += 1
+        except Exception as e:
+            logger.error(f"Cache retry failed for {ts_id}: {e}")
+            raise
+    
+    logger.info(f"DashboardBed: 從快取重新上傳成功，共 {success_count} 個目標")
+
+
 # 註冊 Task
 TaskRegistry.register(DashboardBedTask())
+

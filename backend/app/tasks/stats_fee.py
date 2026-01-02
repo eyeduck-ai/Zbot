@@ -5,7 +5,7 @@ import json
 import random
 import logging
 import asyncio
-from typing import List, Dict, Any, Optional, Callable, Awaitable
+from typing import List, Dict, Any, Optional, Callable, Awaitable, Tuple
 from datetime import datetime, timedelta
 from collections import defaultdict
 from pydantic import BaseModel, Field
@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from app.core.registry import TaskRegistry
 from app.core.alert import get_setting_from_db
 from app.core.jobs import JobManager  # 用於檢查取消狀態
+from app.core.cache import CacheManager  # 快取管理
 from app.db.gsheet import get_gsheet_service
 from vghsdk.core import VghClient, VghSession
 from app.tasks.base import BaseTask
@@ -63,6 +64,7 @@ class StatsFeeResult(BaseModel):
     details: List[str]
     message: Optional[str] = None  # 用於前端顯示
     sheet_url: Optional[str] = None  # Google Sheets 連結
+    cache_id: Optional[str] = None  # 快取 ID (寫入失敗時提供)
 
 class StatsFeeTask(BaseTask):
     """
@@ -252,11 +254,26 @@ class StatsFeeTask(BaseTask):
             
             try:
                 # 呼叫 API 取得區間資料 (使用 safe_request 自動重試 + backoff)
-                data_map = await self._fetch_fee_range_data(
+                data_map, is_valid = await self._fetch_fee_range_data(
                     client,  # 改傳 client 而非 session
                     p.cost_id, p.password, p.use_petition,
                     code, start_ym_str, end_ym_str
                 )
+                
+                # ⚠️ 偵測到無效資料結構 (月份區間可能包含未結帳月份)
+                if not is_valid:
+                    # 計算建議的結束月份 (往前一個月)
+                    if end_month > 1:
+                        suggested_end = f"{end_roc:03d}{(end_month - 1):02d}"
+                    else:
+                        suggested_end = f"{(end_roc - 1):03d}12"
+                    
+                    return StatsFeeResult(
+                        status="data_unavailable",
+                        updated_cells=0,
+                        details=[f"查詢 {code} 時偵測到無效資料結構"],
+                        message=f"資料期間 {start_ym_str}~{end_ym_str} 可能橫跨到未結帳月份，建議將結束月份調整為 {suggested_end}"
+                    )
                 
                 # 將結果寫入主資料結構
                 for ym, qty in data_map.items():
@@ -274,8 +291,28 @@ class StatsFeeTask(BaseTask):
         # 先收集所有需要更新的資料，最後一次性批次寫入以減少 API 請求
         if progress_callback: await progress_callback(90, "正在準備 Google Sheet 更新資料")
         
-        # 收集所有需要批次更新的儲存格: [{'range': 'A1:A1', 'values': [[val]]}]
-        batch_updates = []
+        # ⭐ 儲存快取 (在寫入前先保存，避免資料遺失)
+        cache_data = {
+            "master_data": dict(master_data),  # 轉換 defaultdict
+            "sheet_codes": sheet_codes,
+            "sum_groups": sum_groups,
+            "start_year": start_year,
+            "start_month": start_month,
+            "end_year": end_year,
+            "end_month": end_month,
+        }
+        cache_id = CacheManager.save_cache(
+            task_id="stats_fee_update",
+            params={"year": p.year, "month": p.month, "end_year": end_year, "end_month": end_month},
+            data=cache_data,
+            target_info={"sheet_id": p.sheet_id, "worksheet_name": p.sheet_name}
+        )
+        logger.info(f"StatsFee: 資料已快取 (cache_id={cache_id})")
+        
+        # 收集所有需要批次更新的儲存格
+        # pygsheets.Worksheet.update_values_batch(ranges, values) 需要兩個陣列
+        batch_ranges = []  # ['A1', 'B2', ...]
+        batch_values = []  # [[[val1]], [[val2]], ...]
         total_updated = 0
         
         current_y, current_m = start_year, start_month
@@ -314,11 +351,9 @@ class StatsFeeTask(BaseTask):
                 
                 # 將 1-based row/col 轉換為 A1 表示法
                 col_letter = self._col_index_to_letter(target_col_idx)
-                cell_range = f"'{p.sheet_name}'!{col_letter}{info['row_idx']}"
-                batch_updates.append({
-                    'range': cell_range,
-                    'values': [[val]]
-                })
+                cell_range = f"{col_letter}{info['row_idx']}"
+                batch_ranges.append(cell_range)
+                batch_values.append([[val]])  # 每個 values 是 2D 陣列
                 updates_count += 1
             
             total_updated += updates_count
@@ -332,20 +367,29 @@ class StatsFeeTask(BaseTask):
                 current_m += 1
         
         # 執行批次更新 (一次性寫入所有資料)
-        if batch_updates:
+        write_failed = False
+        if batch_ranges:
             try:
-                if progress_callback: await progress_callback(95, f"正在批次寫入 {len(batch_updates)} 筆資料")
+                if progress_callback: await progress_callback(95, f"正在批次寫入 {len(batch_ranges)} 筆資料")
                 
-                # 使用 pygsheets 的底層 sheets service 執行 batchUpdate
-                # pygsheets worksheet 提供 update_values_batch 方法
-                # 格式: [{'range': 'Sheet1!A1', 'values': [[1]]}]
-                wks.update_values_batch(batch_updates, value_input_option='USER_ENTERED')
+                # pygsheets.Worksheet.update_values_batch(ranges, values, majordim='ROWS', parse=None)
+                # ranges: 陣列 ['A1', 'B2', ...]
+                # values: 陣列 [[[1]], [[2]], ...] (每個元素是 2D array)
+                wks.update_values_batch(batch_ranges, batch_values, parse=True)
                 
-                all_details.append(f"批次更新完成: 共 {len(batch_updates)} 個儲存格")
-                logger.info(f"StatsFee: 批次更新完成，共 {len(batch_updates)} 個儲存格")
+                all_details.append(f"批次更新完成: 共 {len(batch_ranges)} 個儲存格")
+                logger.info(f"StatsFee: 批次更新完成，共 {len(batch_ranges)} 個儲存格")
+                
+                # ⭐ 寫入成功，刪除快取
+                CacheManager.delete_cache(cache_id)
+                cache_id = None  # 清除 cache_id 以免返回
+                
             except Exception as e:
                 all_details.append(f"批次寫入失敗: {e}")
                 logger.error(f"StatsFee: 批次寫入失敗: {e}")
+                write_failed = True
+                # ⭐ 寫入失敗，保留快取供重試
+                all_details.append(f"資料已快取，可重試上傳 (cache_id={cache_id})")
                 
         # 產生月份顯示文字
         if end_year != start_year or end_month != start_month:
@@ -358,21 +402,32 @@ class StatsFeeTask(BaseTask):
             sheet_url = f"https://docs.google.com/spreadsheets/d/{p.sheet_id}/edit#gid={worksheet_gid}"
         else:
             sheet_url = f"https://docs.google.com/spreadsheets/d/{p.sheet_id}"
+        
+        # 根據寫入結果決定最終狀態
+        final_status = "partial_success" if write_failed else "success"
+        final_message = f"更新 {month_str} 統計表" if not write_failed else f"資料已爬取但上傳失敗，可重試"
+        
         return StatsFeeResult(
-            status="success", 
-            updated_cells=total_updated, 
+            status=final_status, 
+            updated_cells=total_updated if not write_failed else 0, 
             details=all_details,
-            message=f"更新 {month_str} 統計表",
-            sheet_url=sheet_url
+            message=final_message,
+            sheet_url=sheet_url,
+            cache_id=cache_id  # ⭐ 失敗時返回 cache_id
         )
 
-    async def _fetch_fee_range_data(self, client: VghClient, cost_id: str, password: str, use_petition: str, code: str, start_ym: str, end_ym: str) -> Dict[str, int]:
+    async def _fetch_fee_range_data(self, client: VghClient, cost_id: str, password: str, use_petition: str, code: str, start_ym: str, end_ym: str) -> Tuple[Dict[str, int], bool]:
         """
         呼叫費用統計 API 取得指定區間的資料。
         會同時查詢門診 (O) 與 住院 (A) 並合併結果。
         使用 client.safe_request() 自動處理重試/backoff/session過期。
+        
+        Returns:
+            Tuple[Dict[str, int], bool]: (資料字典, 是否為有效資料)
+            若 is_valid=False，表示月份區間可能包含未結帳月份
         """
         combined = defaultdict(int)
+        is_valid = True  # 預設有效
         
         for choose in ('O', 'A'):  # O=OPD, A=Admission
             payload = {
@@ -389,21 +444,28 @@ class StatsFeeTask(BaseTask):
                 r = await client.safe_request('POST', FEE_API_URL, data=payload)
                 r.raise_for_status()
                 
-                data = self._parse_range_count(r.text)
-                for ym, qty in data.items():
-                    combined[ym] += qty
+                data, valid = self._parse_range_count(r.text)
+                if not valid:
+                    is_valid = False  # 標記為無效
+                else:
+                    for ym, qty in data.items():
+                        combined[ym] += qty
             except Exception as e:
                 # 記錄錯誤但不中斷任務 (Allow partial failure)
                 logging.warning(f"StatsFee API 錯誤 ({code}/{choose}): {e}")
                 
-        return combined
+        return dict(combined), is_valid
 
-    def _parse_range_count(self, text: str) -> Dict[str, int]:
+    def _parse_range_count(self, text: str) -> Tuple[Dict[str, int], bool]:
         """
         解析 API 回傳的 HTML/JS 內容，提取 JSON 資料。
-        回傳結構: { '11407': 10, '11408': 5 }
+        
+        Returns:
+            Tuple[Dict[str, int], bool]: (資料字典, 是否為有效資料結構)
+            回傳結構: ({ '11407': 10, '11408': 5 }, True) 或 ({}, False)
         """
         # 1. 嘗試直接提取 JSON
+        data_list = None
         try:
             data_list = json.loads(text)
         except:
@@ -413,25 +475,26 @@ class StatsFeeTask(BaseTask):
                 try:
                     data_list = json.loads(m.group(1))
                 except:
-                    return {}
-            else:
-                return {}
+                    pass
+        
+        # 若無法解析 JSON 陣列，視為無效資料 (可能是錯誤頁面)
+        if data_list is None or not isinstance(data_list, list):
+            return {}, False
         
         # 3. 遍歷資料陣列並加總
         result = defaultdict(int)
-        if not isinstance(data_list, list):
-            return {}
-            
         for row in data_list:
-            ym = str(row.get('acicym', '')).strip() # acicym: 年月
-            if ym == '總計': continue
+            ym = str(row.get('acicym', '')).strip()  # acicym: 年月
+            if ym == '總計': 
+                continue
             
             try:
-                qty = int(float(row.get('aciqnty', 0))) # aciqnty: 數量
+                qty = int(float(row.get('aciqnty', 0)))  # aciqnty: 數量
                 result[ym] += qty
             except:
                 pass
-        return result
+        
+        return dict(result), True
 
     def _get_surgery_codes(self, wks) -> List[Dict]:
         """
@@ -505,5 +568,100 @@ class StatsFeeTask(BaseTask):
             col_idx //= 26
         return result
 
+
+# --- 快取重試函數 ---
+
+async def upload_from_cache(data: Dict[str, Any], target_info: Dict[str, Any], params: Dict[str, Any]) -> None:
+    """
+    從快取資料重新上傳到 Google Sheets
+    
+    Args:
+        data: 快取的資料 (包含 master_data, sheet_codes, sum_groups 等)
+        target_info: 目標資訊 (sheet_id, worksheet_name)
+        params: 原始參數
+    """
+    from collections import defaultdict
+    
+    sheet_id = target_info.get("sheet_id")
+    worksheet_name = target_info.get("worksheet_name")
+    
+    if not sheet_id or not worksheet_name:
+        raise ValueError("缺少目標 Sheet 資訊")
+    
+    # 還原資料
+    master_data = defaultdict(lambda: defaultdict(int))
+    for ym, codes in data.get("master_data", {}).items():
+        for code, val in codes.items():
+            master_data[ym][code] = val
+    
+    sheet_codes = data.get("sheet_codes", [])
+    sum_groups = data.get("sum_groups", DEFAULT_SUM_GROUPS)
+    start_year = data.get("start_year")
+    start_month = data.get("start_month")
+    end_year = data.get("end_year")
+    end_month = data.get("end_month")
+    
+    if not all([start_year, start_month, end_year, end_month]):
+        raise ValueError("快取資料不完整")
+    
+    # 連接 Google Sheets
+    gs = get_gsheet_service()
+    gc = gs.get_pygsheets_client()
+    sh = gc.open_by_key(sheet_id)
+    wks = sh.worksheet_by_title(worksheet_name)
+    
+    # 建立 Task 實例以使用其方法
+    task = StatsFeeTask()
+    
+    # 準備批次更新資料
+    batch_ranges = []
+    batch_values = []
+    
+    current_y, current_m = start_year, start_month
+    
+    while (current_y < end_year) or (current_y == end_year and current_m <= end_month):
+        roc_year = current_y - 1911
+        header_val = f"{roc_year:03d}{current_m:02d}"
+        
+        target_col_idx = task._get_or_create_column(wks, header_val)
+        if target_col_idx is None:
+            if current_m == 12: 
+                current_y += 1
+                current_m = 1
+            else: 
+                current_m += 1
+            continue
+        
+        month_data = master_data.get(header_val, {})
+        
+        for info in sheet_codes:
+            code = info['code']
+            val = 0
+            
+            if code.startswith('sum_'):
+                children = sum_groups.get(code, [])
+                for child in children:
+                    val += month_data.get(child.strip(), 0)
+            else:
+                val = month_data.get(code, 0)
+            
+            col_letter = task._col_index_to_letter(target_col_idx)
+            cell_range = f"{col_letter}{info['row_idx']}"
+            batch_ranges.append(cell_range)
+            batch_values.append([[val]])
+        
+        if current_m == 12:
+            current_y += 1
+            current_m = 1
+        else:
+            current_m += 1
+    
+    # 執行批次寫入
+    if batch_ranges:
+        wks.update_values_batch(batch_ranges, batch_values, parse=True)
+        logger.info(f"StatsFee: 從快取重新上傳成功，共 {len(batch_ranges)} 個儲存格")
+
+
 # 註冊任務
 TaskRegistry.register(StatsFeeTask())
+

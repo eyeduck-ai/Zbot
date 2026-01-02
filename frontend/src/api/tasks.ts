@@ -66,7 +66,29 @@ export interface JobResult {
     success?: number;
     failed?: number;
     details?: string[];
+    cache_id?: string;  // 快取 ID (寫入失敗時提供)
     [key: string]: unknown;
+}
+
+/** 快取項目 */
+export interface CacheItem {
+    id: string;
+    task_id: string;
+    created_at: string;
+    expires_at: string;
+    params: Record<string, unknown>;
+    size_bytes: number;
+}
+
+/** 快取列表回應 */
+export interface CacheListResponse {
+    caches: CacheItem[];
+}
+
+/** 快取檢查回應 */
+export interface CacheCheckResponse {
+    has_cache: boolean;
+    cache?: CacheItem;
 }
 
 // =============================================================================
@@ -114,6 +136,44 @@ export const tasksApi = {
      */
     cancelJob: async (jobId: string): Promise<{ success: boolean; message?: string }> => {
         return apiClient.post<{ success: boolean; message?: string }>(`/api/tasks/jobs/${jobId}/cancel`);
+    },
+
+    // =========================================================================
+    // Cache API (快取管理)
+    // =========================================================================
+
+    /**
+     * 列出所有待上傳快取
+     * @param taskId 可選，若指定則只列出該任務的快取
+     */
+    listCaches: async (taskId?: string): Promise<CacheItem[]> => {
+        const url = taskId ? `/api/cache?task_id=${taskId}` : '/api/cache';
+        const response = await apiClient.get<CacheListResponse>(url);
+        return response.caches || [];
+    },
+
+    /**
+     * 檢查特定任務是否有待上傳快取
+     * @param taskId 任務 ID
+     */
+    checkCache: async (taskId: string): Promise<CacheCheckResponse> => {
+        return apiClient.get<CacheCheckResponse>(`/api/cache/check/${taskId}`);
+    },
+
+    /**
+     * 重新上傳快取資料
+     * @param cacheId 快取 ID
+     */
+    retryCache: async (cacheId: string): Promise<{ status: string; message: string }> => {
+        return apiClient.post<{ status: string; message: string }>(`/api/cache/${cacheId}/retry`);
+    },
+
+    /**
+     * 刪除快取
+     * @param cacheId 快取 ID
+     */
+    deleteCache: async (cacheId: string): Promise<{ status: string; message: string }> => {
+        return apiClient.delete<{ status: string; message: string }>(`/api/cache/${cacheId}`);
     },
 };
 

@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Clock, X, Loader2, CheckCircle, XCircle, AlertCircle } from 'lucide-react';
+import { Clock, X, Loader2, CheckCircle, XCircle, AlertCircle, Upload, Trash2 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { tasksApi } from '../api/tasks';
-import type { Job } from '../api/tasks';
+import type { Job, CacheItem } from '../api/tasks';
 import { TASK_NAMES } from '../constants/taskNames';
 
 interface BackgroundTasksIndicatorProps {
@@ -12,7 +12,9 @@ interface BackgroundTasksIndicatorProps {
 export const BackgroundTasksIndicator: React.FC<BackgroundTasksIndicatorProps> = ({ className }) => {
     const { token } = useAuth();
     const [jobs, setJobs] = useState<Job[]>([]);
+    const [caches, setCaches] = useState<CacheItem[]>([]);  // 待上傳快取
     const [isOpen, setIsOpen] = useState(false);
+    const [retryingId, setRetryingId] = useState<string | null>(null);  // 正在重試的快取 ID
 
     // 取得任務列表
     const fetchJobs = useCallback(async () => {
@@ -37,6 +39,44 @@ export const BackgroundTasksIndicator: React.FC<BackgroundTasksIndicatorProps> =
         }
     }, [token]);
 
+    // 取得待上傳快取列表
+    const fetchCaches = useCallback(async () => {
+        if (!token) return;
+        try {
+            const data = await tasksApi.listCaches();
+            setCaches(data);
+        } catch (e) {
+            console.error('Failed to fetch caches:', e);
+            setCaches([]);
+        }
+    }, [token]);
+
+    // 重試快取上傳
+    const handleRetryCache = async (cacheId: string) => {
+        setRetryingId(cacheId);
+        try {
+            const result = await tasksApi.retryCache(cacheId);
+            if (result.status === 'success') {
+                // 重新載入快取列表
+                fetchCaches();
+            }
+        } catch (e) {
+            console.error('Failed to retry cache:', e);
+        } finally {
+            setRetryingId(null);
+        }
+    };
+
+    // 刪除快取
+    const handleDeleteCache = async (cacheId: string) => {
+        try {
+            await tasksApi.deleteCache(cacheId);
+            fetchCaches();
+        } catch (e) {
+            console.error('Failed to delete cache:', e);
+        }
+    };
+
     // 📌 監聽任務啟動事件，立即觸發輪詢
     useEffect(() => {
         const handleTaskStarted = () => {
@@ -44,6 +84,7 @@ export const BackgroundTasksIndicator: React.FC<BackgroundTasksIndicatorProps> =
         };
         const handleJobUpdated = () => {
             fetchJobs();
+            fetchCaches();  // 任務完成後也檢查快取
         };
         window.addEventListener('task-started', handleTaskStarted);
         window.addEventListener('job-updated', handleJobUpdated);
@@ -51,7 +92,7 @@ export const BackgroundTasksIndicator: React.FC<BackgroundTasksIndicatorProps> =
             window.removeEventListener('task-started', handleTaskStarted);
             window.removeEventListener('job-updated', handleJobUpdated);
         };
-    }, [fetchJobs]);
+    }, [fetchJobs, fetchCaches]);
 
     // 取消任務
     const handleCancelJob = async (jobId: string) => {
@@ -74,6 +115,7 @@ export const BackgroundTasksIndicator: React.FC<BackgroundTasksIndicatorProps> =
 
     useEffect(() => {
         fetchJobs(); // 初次載入
+        fetchCaches(); // 初次載入快取
 
         // 使用動態間隔輪詢
         let timeoutId: ReturnType<typeof setTimeout>;
@@ -83,6 +125,7 @@ export const BackgroundTasksIndicator: React.FC<BackgroundTasksIndicatorProps> =
             const interval = hasRunningJobsRef.current ? 3000 : 30000;
             timeoutId = setTimeout(async () => {
                 await fetchJobs();
+                await fetchCaches();
                 poll(); // 遞迴繼續
             }, interval);
         };
@@ -90,14 +133,17 @@ export const BackgroundTasksIndicator: React.FC<BackgroundTasksIndicatorProps> =
         // 📌 修正：首次快速輪詢 (3 秒後)，確保能及時偵測新任務
         timeoutId = setTimeout(() => {
             fetchJobs();
+            fetchCaches();
             poll();
         }, 3000);
 
         return () => clearTimeout(timeoutId);
-    }, [fetchJobs]);
+    }, [fetchJobs, fetchCaches]);
 
-    // 計算進行中的任務數量
+    // 計算進行中的任務數量 + 待上傳快取數量
     const runningCount = jobs.filter(j => j.status === 'running' || j.status === 'pending').length;
+    const pendingCacheCount = caches.length;
+    const totalBadgeCount = runningCount + pendingCacheCount;
 
     // 狀態圖示
     const getStatusIcon = (status: string) => {
@@ -122,6 +168,17 @@ export const BackgroundTasksIndicator: React.FC<BackgroundTasksIndicatorProps> =
         return date.toLocaleTimeString('zh-TW', { hour: '2-digit', minute: '2-digit' });
     };
 
+    // 格式化日期時間 (用於快取)
+    const formatDateTime = (dateStr: string) => {
+        const date = new Date(dateStr);
+        return date.toLocaleString('zh-TW', {
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit'
+        });
+    };
+
     return (
         <div style={{ position: 'relative' }} className={className}>
             {/* 指示器按鈕 */}
@@ -134,7 +191,7 @@ export const BackgroundTasksIndicator: React.FC<BackgroundTasksIndicatorProps> =
                     padding: '8px 12px',
                     borderRadius: '8px',
                     border: '1px solid #e0e7ee',
-                    backgroundColor: runningCount > 0 ? '#fef3c7' : '#ffffff',
+                    backgroundColor: totalBadgeCount > 0 ? '#fef3c7' : '#ffffff',
                     cursor: 'pointer',
                     fontSize: '13px',
                     fontWeight: 500,
@@ -142,21 +199,23 @@ export const BackgroundTasksIndicator: React.FC<BackgroundTasksIndicatorProps> =
                     transition: 'all 0.2s',
                 }}
                 onMouseEnter={(e) => {
-                    e.currentTarget.style.backgroundColor = runningCount > 0 ? '#fde68a' : '#f3f4f6';
+                    e.currentTarget.style.backgroundColor = totalBadgeCount > 0 ? '#fde68a' : '#f3f4f6';
                 }}
                 onMouseLeave={(e) => {
-                    e.currentTarget.style.backgroundColor = runningCount > 0 ? '#fef3c7' : '#ffffff';
+                    e.currentTarget.style.backgroundColor = totalBadgeCount > 0 ? '#fef3c7' : '#ffffff';
                 }}
             >
                 {runningCount > 0 ? (
                     <Loader2 size={16} className="animate-spin" style={{ color: '#f59e0b' }} />
+                ) : pendingCacheCount > 0 ? (
+                    <Upload size={16} style={{ color: '#f59e0b' }} />
                 ) : (
                     <Clock size={16} style={{ color: '#6b7280' }} />
                 )}
                 <span>背景任務</span>
-                {runningCount > 0 && (
+                {totalBadgeCount > 0 && (
                     <span style={{
-                        backgroundColor: '#f59e0b',
+                        backgroundColor: pendingCacheCount > 0 && runningCount === 0 ? '#ef4444' : '#f59e0b',
                         color: 'white',
                         fontSize: '11px',
                         fontWeight: 600,
@@ -165,7 +224,7 @@ export const BackgroundTasksIndicator: React.FC<BackgroundTasksIndicatorProps> =
                         minWidth: '18px',
                         textAlign: 'center',
                     }}>
-                        {runningCount}
+                        {totalBadgeCount}
                     </span>
                 )}
             </button>
@@ -176,7 +235,7 @@ export const BackgroundTasksIndicator: React.FC<BackgroundTasksIndicatorProps> =
                     position: 'absolute',
                     top: 'calc(100% + 8px)',
                     right: 0,
-                    width: '320px',
+                    width: '360px',
                     backgroundColor: '#ffffff',
                     borderRadius: '12px',
                     boxShadow: '0 4px 20px rgba(0, 0, 0, 0.15)',
@@ -207,9 +266,92 @@ export const BackgroundTasksIndicator: React.FC<BackgroundTasksIndicatorProps> =
                         </button>
                     </div>
 
+                    {/* 待重新上傳區塊 */}
+                    {caches.length > 0 && (
+                        <div style={{
+                            backgroundColor: '#fef2f2',
+                            borderBottom: '1px solid #fecaca',
+                        }}>
+                            <div style={{
+                                padding: '10px 16px',
+                                display: 'flex',
+                                alignItems: 'center',
+                                gap: '8px',
+                                color: '#dc2626',
+                                fontWeight: 600,
+                                fontSize: '13px',
+                            }}>
+                                <Upload size={14} />
+                                待重新上傳 ({caches.length})
+                            </div>
+                            {caches.map(cache => (
+                                <div
+                                    key={cache.id}
+                                    style={{
+                                        padding: '10px 16px',
+                                        borderTop: '1px solid #fecaca',
+                                        display: 'flex',
+                                        alignItems: 'center',
+                                        justifyContent: 'space-between',
+                                    }}
+                                >
+                                    <div>
+                                        <div style={{ fontSize: '13px', fontWeight: 500, color: '#1f2937' }}>
+                                            {TASK_NAMES[cache.task_id] || cache.task_id}
+                                        </div>
+                                        <div style={{ fontSize: '11px', color: '#6b7280' }}>
+                                            {formatDateTime(cache.created_at)}
+                                        </div>
+                                    </div>
+                                    <div style={{ display: 'flex', gap: '6px' }}>
+                                        <button
+                                            onClick={() => handleRetryCache(cache.id)}
+                                            disabled={retryingId === cache.id}
+                                            style={{
+                                                padding: '4px 10px',
+                                                fontSize: '11px',
+                                                borderRadius: '4px',
+                                                border: 'none',
+                                                backgroundColor: '#3b82f6',
+                                                color: 'white',
+                                                cursor: retryingId === cache.id ? 'not-allowed' : 'pointer',
+                                                fontWeight: 500,
+                                                display: 'flex',
+                                                alignItems: 'center',
+                                                gap: '4px',
+                                                opacity: retryingId === cache.id ? 0.7 : 1,
+                                            }}
+                                        >
+                                            {retryingId === cache.id ? (
+                                                <Loader2 size={12} className="animate-spin" />
+                                            ) : (
+                                                <Upload size={12} />
+                                            )}
+                                            重新上傳
+                                        </button>
+                                        <button
+                                            onClick={() => handleDeleteCache(cache.id)}
+                                            style={{
+                                                padding: '4px 8px',
+                                                fontSize: '11px',
+                                                borderRadius: '4px',
+                                                border: '1px solid #e0e7ee',
+                                                backgroundColor: '#ffffff',
+                                                color: '#6b7280',
+                                                cursor: 'pointer',
+                                            }}
+                                        >
+                                            <Trash2 size={12} />
+                                        </button>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+
                     {/* 任務列表 */}
                     <div style={{ maxHeight: '300px', overflowY: 'auto' }}>
-                        {jobs.length === 0 ? (
+                        {jobs.length === 0 && caches.length === 0 ? (
                             <div style={{
                                 padding: '24px',
                                 textAlign: 'center',

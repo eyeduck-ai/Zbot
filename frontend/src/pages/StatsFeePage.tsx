@@ -6,6 +6,11 @@ import { Badge } from '../components/ui/Badge';
 import { useTaskPolling } from '../hooks/useTaskPolling';
 import { useTaskStats } from '../hooks/useTaskStats';
 import { TrustBadge } from '../components/TrustBadge';
+import { CacheCheckDialog } from '../components/CacheCheckDialog';
+import type { CacheInfo } from '../components/CacheCheckDialog';
+import { tasksApi } from '../api/tasks';
+
+const TASK_ID = 'stats_fee_update';
 
 export const StatsFeePage: React.FC = () => {
     // 預設為上個月 (YYYY-MM 格式)
@@ -24,16 +29,19 @@ export const StatsFeePage: React.FC = () => {
     const [startMonth, setStartMonth] = useState(lastMonthStr);
     const [endMonth, setEndMonth] = useState(lastMonthStr);
 
+    // 📌 快取檢查狀態
+    const [pendingCache, setPendingCache] = useState<CacheInfo | null>(null);
+    const [showCacheDialog, setShowCacheDialog] = useState(false);
+
     // 📌 使用 useTaskPolling hook (取代原本的 40+ 行輪詢邏輯)
     const { loading, progress, statusMsg, statusType, sheetUrl, runTask } = useTaskPolling();
 
     // 📌 使用 useTaskStats 取得累積統計
-    const { stats } = useTaskStats('stats_fee_update');
+    const { stats } = useTaskStats(TASK_ID);
 
-    // 執行任務
-    const handleRun = useCallback(async () => {
+    // 建立任務參數
+    const buildParams = useCallback(() => {
         const params: Record<string, number> = {};
-
         if (useCustomRange) {
             const [sy, sm] = startMonth.split('-').map(Number);
             const [ey, em] = endMonth.split('-').map(Number);
@@ -42,9 +50,56 @@ export const StatsFeePage: React.FC = () => {
             params.end_year = ey;
             params.end_month = em;
         }
+        return params;
+    }, [useCustomRange, startMonth, endMonth]);
 
-        await runTask('stats_fee_update', params);
-    }, [useCustomRange, startMonth, endMonth, runTask]);
+    // 執行任務 (跳過快取檢查)
+    const executeTask = useCallback(async () => {
+        await runTask(TASK_ID, buildParams());
+    }, [runTask, buildParams]);
+
+    // 重試快取上傳
+    const handleRetryCache = useCallback(async () => {
+        if (!pendingCache) return;
+        try {
+            const result = await tasksApi.retryCache(pendingCache.id);
+            if (result.status === 'success') {
+                setShowCacheDialog(false);
+                setPendingCache(null);
+                // 可以顯示成功訊息
+            }
+        } catch (e) {
+            console.error('Failed to retry cache:', e);
+        }
+    }, [pendingCache]);
+
+    // 忽略快取並重新執行
+    const handleIgnoreCache = useCallback(async () => {
+        if (pendingCache) {
+            await tasksApi.deleteCache(pendingCache.id);
+        }
+        setShowCacheDialog(false);
+        setPendingCache(null);
+        await executeTask();
+    }, [pendingCache, executeTask]);
+
+    // 執行任務 (先檢查快取)
+    const handleRun = useCallback(async () => {
+        // 先檢查是否有待上傳的快取
+        try {
+            const cacheResult = await tasksApi.checkCache(TASK_ID);
+            if (cacheResult.has_cache && cacheResult.cache) {
+                setPendingCache(cacheResult.cache);
+                setShowCacheDialog(true);
+                return; // 等待使用者選擇
+            }
+        } catch (e) {
+            console.error('Failed to check cache:', e);
+        }
+
+        // 無快取，直接執行
+        await executeTask();
+    }, [executeTask]);
 
     // 解析顯示的月份範圍
     const displayRange = useCustomRange
@@ -188,6 +243,19 @@ export const StatsFeePage: React.FC = () => {
                     </Card>
                 )}
             </div>
+
+            {/* 快取檢查對話框 */}
+            {showCacheDialog && pendingCache && (
+                <CacheCheckDialog
+                    cache={pendingCache}
+                    onRetry={handleRetryCache}
+                    onIgnore={handleIgnoreCache}
+                    onCancel={() => {
+                        setShowCacheDialog(false);
+                        setPendingCache(null);
+                    }}
+                />
+            )}
         </div>
     );
 };

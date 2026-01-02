@@ -183,6 +183,7 @@ TaskRegistry.register(MyTask())
 | `logger.py` | 統一日誌設定 |
 | `alert.py` | Email 告警服務 |
 | `task_logger.py` | 任務執行日誌 (寫入 DB) |
+| `cache.py` | `CacheManager` - 本地 JSON 快取 (GSheet 寫入失敗時暫存資料) |
 
 #### JobManager Checkpoint 支援
 
@@ -203,6 +204,33 @@ JobManager.mark_item_completed(job_id, key, message="處理中...")
 if JobManager.is_cancelled(job_id):
     return
 ```
+
+#### CacheManager 快取管理
+
+當統計任務 (如 `stats_fee`, `stats_op`, `dashboard_bed`) 成功爬取資料但 GSheet 寫入失敗時，使用 CacheManager 暫存資料，讓使用者可以稍後重試上傳。
+
+```python
+from app.core.cache import CacheManager
+
+# 儲存快取 (在 GSheet 寫入前)
+cache_id = CacheManager.save_cache(
+    task_id="stats_fee_update",
+    params={"year": 2026, "month": 1},
+    data={"results": crawled_data},
+    target_info={"sheet_id": "xxx", "worksheet_name": "Sheet1"}
+)
+
+# 寫入成功 → 刪除快取
+CacheManager.delete_cache(cache_id)
+
+# 寫入失敗 → 保留快取，返回 cache_id 給前端
+return StatsFeeResult(status="partial_success", cache_id=cache_id)
+```
+
+**快取特性**:
+- 儲存位置: `backend/cache/{task_id}/{cache_id}.json`
+- TTL: 48 小時自動過期
+- 同一任務只保留最新一筆快取
 
 ---
 
@@ -247,6 +275,7 @@ if JobManager.is_cancelled(job_id):
 |--------|------|------|
 | `auth.py` | `/api/auth/*` | 登入/登出、使用者驗證 |
 | `tasks.py` | `/api/tasks/*` | 任務執行、Job 狀態查詢 |
+| `cache.py` | `/api/cache/*` | 快取管理 (GSheet 寫入失敗重試) |
 | `sheets.py` | `/api/sheets/*` | GSheet 設定 CRUD |
 | `templates.py` | `/api/templates/*` | 手術模板 CRUD |
 | `stats.py` | `/api/stats/*` | 任務統計資料 |

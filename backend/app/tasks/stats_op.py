@@ -8,11 +8,12 @@ from pydantic import BaseModel, Field
 
 from app.core.registry import TaskRegistry
 from app.core.alert import get_setting_from_db
+from app.core.cache import CacheManager  # 快取管理
 from app.db.gsheet import get_gsheet_service
 from vghsdk.core import VghClient, VghSession
 from app.tasks.base import BaseTask
 from vghsdk.utils import to_western_date
-from vghsdk.modules.surgery import SurgeryDeptScheduleTask, SurgeryScheduleParams
+from vghsdk.modules.surgery import surgery_dept_schedule, SurgeryScheduleParams
 
 logger = logging.getLogger("stats_op")
 
@@ -38,6 +39,7 @@ class StatsOpResult(BaseModel):
     status: str
     message: str
     sheet_url: Optional[str] = None  # Google Sheets 連結
+    cache_id: Optional[str] = None  # 快取 ID (寫入失敗時提供)
 
 class StatsOpTask(BaseTask):
     """
@@ -152,15 +154,15 @@ class StatsOpTask(BaseTask):
         logger.info(f"StatsOp Fetching from: {roc_date_str}")
         
         query_params = SurgeryScheduleParams(query="OPH", date=roc_date_str)
-        fetcher = SurgeryDeptScheduleTask()
         
         # 使用 Exponential Backoff 重試
         from vghsdk.core import CRAWLER_CONFIG
         data = []
         for attempt in range(CRAWLER_CONFIG.max_retries + 1):
             try:
-                data = await fetcher.run(query_params, client)
-                if data:
+                result = await surgery_dept_schedule(query_params, client)
+                if result.success and result.data:
+                    data = result.data
                     break
                 # Exponential backoff
                 delay = min(
@@ -270,6 +272,22 @@ class StatsOpTask(BaseTask):
         cataract_ops = self._apply_aggregation(cataract_ops, doctor_groups)
         lensx_ops = self._apply_aggregation(lensx_ops, doctor_groups)
 
+        # ⭐ 儲存快取 (在寫入前先保存，避免資料遺失)
+        cache_data = {
+            "total_ops": total_ops.to_dict(),
+            "cataract_ops": cataract_ops.to_dict(),
+            "lensx_ops": lensx_ops.to_dict(),
+            "doctor_groups": doctor_groups,
+        }
+        first_target = targets[0] if targets else {}
+        cache_id = CacheManager.save_cache(
+            task_id="stats_op_update",
+            params={"year": p.year, "month": p.month, "end_year": p.end_year, "end_month": p.end_month},
+            data=cache_data,
+            target_info={"targets": targets}
+        )
+        logger.info(f"StatsOp: 資料已快取 (cache_id={cache_id})")
+
         # 6. 更新 Google Sheet (Update GSheet)
         gs = get_gsheet_service()
         
@@ -304,7 +322,16 @@ class StatsOpTask(BaseTask):
                 logger.error(f"Failed to update target {sheet_id}: {e}")
                 details_msg.append(f"Failed {sheet_id[:6]}: {e}")
 
-        status = "success" if success_count > 0 else "error"
+        # 根據寫入結果決定狀態
+        if success_count > 0:
+            # ⭐ 至少部分成功，刪除快取
+            CacheManager.delete_cache(cache_id)
+            cache_id = None
+            status = "success"
+        else:
+            # ⭐ 全部失敗，保留快取
+            status = "partial_success"
+            
         # 產生月份顯示文字
         if p.end_year and p.end_month and (p.end_year != p.year or p.end_month != p.month):
             month_str = f"{p.month}-{p.end_month} 月"
@@ -320,10 +347,14 @@ class StatsOpTask(BaseTask):
                 sheet_url = f"https://docs.google.com/spreadsheets/d/{first_sheet_id}"
         else:
             sheet_url = None
+        
+        final_message = f"更新 {month_str} 統計表" if status == "success" else f"資料已爬取但上傳失敗，可重試"
+        
         return StatsOpResult(
             status=status, 
-            message=f"更新 {month_str} 統計表",
-            sheet_url=sheet_url
+            message=final_message,
+            sheet_url=sheet_url,
+            cache_id=cache_id
         )
 
     def _apply_aggregation(self, pivot_df: pd.DataFrame, groups: Dict[str, List[str]]) -> pd.DataFrame:
@@ -448,5 +479,57 @@ class StatsOpTask(BaseTask):
         except Exception as e:
             logger.error(f"Write error {title}: {e}")
 
+
+# --- 快取重試函數 ---
+
+async def upload_from_cache(data: Dict[str, Any], target_info: Dict[str, Any], params: Dict[str, Any]) -> None:
+    """
+    從快取資料重新上傳到 Google Sheets
+    
+    Args:
+        data: 快取的資料 (包含 total_ops, cataract_ops, lensx_ops, doctor_groups)
+        target_info: 目標資訊 (targets)
+        params: 原始參數
+    """
+    # 還原 DataFrames
+    total_ops = pd.DataFrame.from_dict(data.get("total_ops", {}))
+    cataract_ops = pd.DataFrame.from_dict(data.get("cataract_ops", {}))
+    lensx_ops = pd.DataFrame.from_dict(data.get("lensx_ops", {}))
+    
+    targets = target_info.get("targets", [])
+    
+    if not targets:
+        raise ValueError("快取資料中無目標 Sheet 資訊")
+    
+    # 連接 Google Sheets
+    gs = get_gsheet_service()
+    
+    # 建立 Task 實例以使用其方法
+    task = StatsOpTask()
+    
+    success_count = 0
+    for tgt in targets:
+        sheet_id = tgt.get('sheet_id')
+        ws_total = tgt.get('worksheet_total', 'Total_Operations')
+        ws_cataract = tgt.get('worksheet_cataract', 'Cataract_Operations')
+        ws_lensx = tgt.get('worksheet_lensx', 'LENSX_Operations')
+        
+        try:
+            gc = gs.get_pygsheets_client()
+            sh = gc.open_by_key(sheet_id)
+            
+            task._write_df(sh, ws_total, total_ops, include_index=True, merge_pivot=True)
+            task._write_df(sh, ws_cataract, cataract_ops, include_index=True, merge_pivot=True)
+            task._write_df(sh, ws_lensx, lensx_ops, include_index=True, merge_pivot=True)
+            
+            success_count += 1
+        except Exception as e:
+            logger.error(f"Cache retry failed for {sheet_id}: {e}")
+            raise
+    
+    logger.info(f"StatsOp: 從快取重新上傳成功，共 {success_count} 個目標")
+
+
 # 註冊任務
 TaskRegistry.register(StatsOpTask())
+

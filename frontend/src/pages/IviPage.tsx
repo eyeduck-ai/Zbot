@@ -114,7 +114,7 @@ export const IviPage: React.FC = () => {
                     status: 'pending' as const,
                     // 儲存原始值用於追蹤編輯
                     _original: {
-                        vs_code: item.vs_code,
+                        doc_code: item.doc_code,
                         vs_name: item.vs_name,
                         diagnosis: item.diagnosis,
                         side: item.side,
@@ -175,7 +175,7 @@ export const IviPage: React.FC = () => {
             const previewJob = await tasksApi.run('opnote_preview', {
                 params: {
                     source_type: 'ivi',
-                    vs_code: selectedItems[0].vs_code,
+                    doc_code: selectedItems[0].doc_code,
                     r_code: rCode,
                     date: startDate,
                     eip_id: eipId,
@@ -188,7 +188,7 @@ export const IviPage: React.FC = () => {
                         charge_type: item.charge_type,
                         op_start: item.op_start,
                         op_end: item.op_end,
-                        vs_code: item.vs_code,
+                        doc_code: item.doc_code,
                         vs_name: item.vs_name,
                         r_code: rCode,
                         r_name: rName,
@@ -303,7 +303,7 @@ export const IviPage: React.FC = () => {
                 diagnosis: batchDiagnosis || item.diagnosis,
                 side: batchSide || item.side,
                 drug: batchDrug || item.drug,
-                vs_code: batchVsCode || item.vs_code,
+                doc_code: batchVsCode || item.doc_code,
                 vs_name: batchVsCode ? '' : item.vs_name,
             };
         }));
@@ -657,10 +657,10 @@ export const IviPage: React.FC = () => {
                                                 {/* 醫師登號 - 可編輯 */}
                                                 <td className="p-3 whitespace-nowrap">
                                                     <input
-                                                        value={item.vs_code}
+                                                        value={item.doc_code}
                                                         onChange={async e => {
                                                             const code = e.target.value.replace(/\D/g, '').slice(0, 4);
-                                                            updateItem(i, 'vs_code', code);
+                                                            updateItem(i, 'doc_code', code);
                                                             // 當輸入4位數時自動查詢姓名
                                                             if (code.length === 4) {
                                                                 const { lookupDoctorName } = await import('../api/tasks');
@@ -673,7 +673,7 @@ export const IviPage: React.FC = () => {
                                                         disabled={!item.selected}
                                                         className="w-14 bg-transparent hover:bg-white/50 focus:bg-white focus:ring-1 rounded px-2 py-1 text-sm font-mono text-center transition-all disabled:cursor-not-allowed"
                                                         style={{
-                                                            border: item._original && item.vs_code !== item._original.vs_code
+                                                            border: item._original && item.doc_code !== item._original.doc_code
                                                                 ? '2px solid #86efac' : 'none'
                                                         }}
                                                         placeholder="4位數"
