@@ -148,9 +148,16 @@ export const SurgeryPage: React.FC<SurgeryPageProps> = ({ onNavigate }) => {
                 if (job.status === 'success') {
                     const result = job.result;
                     if ((result as any)?.count > 0) {
+                        // 將查詢日期 (yyyy-mm-dd) 轉換成民國年月日格式 (0yyymmdd) 來比對
+                        // op_date 格式為 8 位數，如 01150106 (0 + 民國年 + 月 + 日)
+                        const queryDateParts = date.split('-');
+                        const queryYear = parseInt(queryDateParts[0]) - 1911;
+                        const queryRocDate = `${String(queryYear).padStart(4, '0')}${queryDateParts[1]}${queryDateParts[2]}`;
+
                         setScheduleItems((result as any).items.map((item: ScheduleItem) => ({
                             ...item,
-                            selected: true
+                            // 預設只選擇查詢日期當天的病人
+                            selected: item.op_date === queryRocDate
                         })));
                         setStep('select');
                         setStatusMsg(`找到 ${(result as any).count} 筆排程`);
